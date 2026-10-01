@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spatial Arcade</title><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas><script>
+const c=document.getElementById('c'),g=c.getContext('2d');
+let W,H;function rs(){W=c.width=innerWidth;H=c.height=innerHeight}rs();addEventListener('resize',rs);
+const qp=new URLSearchParams(location.search);
+const room=(qp.get('room')||'ABCD').toUpperCase();
+let aim={x:.5,y:.5},tracking=false,phone=false,score=0,shots=0,flash=0,t={x:.5,y:.5,r:.06,at:0};
+function newT(){t.x=.15+Math.random()*.7;t.y=.2+Math.random()*.6;t.at=performance.now()}newT();
+function fire(){shots++;const dx=(aim.x-t.x)*W,dy=(aim.y-t.y)*H,hit=Math.hypot(dx,dy)<t.r*H;
+ if(hit){score++;flash=12;newT()}else flash=-6;
+ try{ws.send(JSON.stringify({type:'result',hit,score,shots}))}catch(e){}}
+let ws;function conn(){
+ ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
+ ws.onmessage=e=>{const m=JSON.parse(e.data);
+  if(m.type==='aim'){aim.x=m.x;aim.y=m.y;tracking=true}
+  else if(m.type==='lost')tracking=false;
+  else if(m.type==='fire')fire();
+  else if(m.type==='peer_joined')phone=true;else if(m.type==='peer_left')phone=false}
+ ws.onclose=()=>setTimeout(conn,1000)}
+conn();
+// Testing without the phone: mouse + Enter/click
+addEventListener('mousemove',e=>{aim.x=e.clientX/W;aim.y=e.clientY/H;tracking=true});
+addEventListener('click',fire);addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')fire()});
+function draw(){g.fillStyle='#000';g.fillRect(0,0,W,H);
+ const b=Math.round(H*.035);g.strokeStyle='#fff';g.lineWidth=b;g.strokeRect(b/2,b/2,W-b,H-b); // fixed tracking border
+ if(performance.now()-t.at>2500)newT();
+ g.fillStyle=flash>0?'#0f0':'#e33';g.beginPath();g.arc(t.x*W,t.y*H,t.r*H,0,7);g.fill();
+ g.fillStyle='#fc0';g.beginPath();g.arc(t.x*W,t.y*H,t.r*H*.4,0,7);g.fill();
+ if(flash)flash+=flash>0?-1:1;
+ if(tracking){const x=aim.x*W,y=aim.y*H;g.strokeStyle='#0cf';g.lineWidth=4;g.beginPath();g.arc(x,y,24,0,7);g.moveTo(x-36,y);g.lineTo(x+36,y);g.moveTo(x,y-36);g.lineTo(x,y+36);g.stroke()}
+ g.fillStyle='#8f8';g.font=(H*.04)+'px sans-serif';g.textBaseline='top';
+ g.fillText('ROOM '+room+'   '+(phone?(tracking?'AIMING':'TV NOT IN VIEW'):'WAITING FOR PHONE')+'   SCORE '+score+'/'+shots,b*2,b*2);
+ requestAnimationFrame(draw)}draw();
+</script></body></html>
