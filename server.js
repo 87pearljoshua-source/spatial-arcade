@@ -20,6 +20,7 @@ wss.on('connection', (ws, req) => {
   const other = role === 'tv' ? 'phone' : 'tv';
   const notify = (t) => r[other].forEach(s => s.readyState === 1 && s.send(JSON.stringify({ type: t, role })));
   notify('peer_joined');
+  if (r[other].size > 0) ws.send(JSON.stringify({ type: 'peer_joined', role: other })); // tell newcomer a peer is already here
   ws.on('message', (d) => {
     let m; try { m = JSON.parse(d); } catch { return; }
     if (m.type === 'ping') return ws.send(JSON.stringify({ type: 'pong', t: m.t }));
