@@ -13,6 +13,7 @@ function fire(){shots++;const dx=(aim.x-t.x)*W,dy=(aim.y-t.y)*H,hit=Math.hypot(d
 let ws;function conn(){
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
  ws.onmessage=e=>{const m=JSON.parse(e.data);
+  if(m.type==='aim'||m.type==='fire'||m.type==='lost')phone=true;
   if(m.type==='aim'){aim.x=m.x;aim.y=m.y;tracking=true}
   else if(m.type==='lost')tracking=false;
   else if(m.type==='fire')fire();
