@@ -5,32 +5,112 @@ const c=document.getElementById('c'),g=c.getContext('2d');
 let W,H;function rs(){W=c.width=innerWidth;H=c.height=innerHeight}rs();addEventListener('resize',rs);
 const qp=new URLSearchParams(location.search);
 const room=(qp.get('room')||'ABCD').toUpperCase();
-let aim={x:.5,y:.5},tracking=false,phone=false,score=0,shots=0,flash=0,t={x:.5,y:.5,r:.06,at:0};
-function newT(){t.x=.15+Math.random()*.7;t.y=.2+Math.random()*.6;t.at=performance.now()}newT();
-function fire(){shots++;const dx=(aim.x-t.x)*W,dy=(aim.y-t.y)*H,hit=Math.hypot(dx,dy)<t.r*H;
- if(hit){score++;flash=12;newT()}else flash=-6;
- try{ws.send(JSON.stringify({type:'result',hit,score,shots}))}catch(e){}}
-let ws;function conn(){
+
+// ---- settings ----
+const MAG=30;                     // bullets per magazine (reserve ammo is unlimited)
+const RELOAD_MS=1200, AUTO_MS=110, MIN_GAP_MS=80;
+const HOLD_MS=250;                // hold the fire button this long and it switches to full auto
+const TARGET_R=0.075;             // target radius as a fraction of screen height
+const ASSIST_RANGE=0.16;          // aim assist pulls the crosshair when this close (fraction of height)
+const ASSIST_PULL=0.6;            // 0 = no pull, 1 = snaps to target
+
+// ---- state ----
+let raw={x:.5,y:.5}, tracking=false, phone=false;
+let hits=0, shots=0, combo=0, best=0, flash=0;
+let assist=false, ammo=MAG, reloadingUntil=0, holding=false, holdStart=0, lastShot=0;
+let targets=[], parts=[];
+const magSize=()=>MAG;
+const targetCount=()=>assist?3:1;
+
+// ---- network ----
+let ws;
+function send(o){try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}catch(e){}}
+function sendState(){send({type:'state',ammo,mag:magSize(),assist,reloading:performance.now()<reloadingUntil,hits,shots})}
+function conn(){
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
- ws.onmessage=e=>{const m=JSON.parse(e.data);
-  if(m.type==='aim'||m.type==='fire'||m.type==='lost')phone=true;
-  if(m.type==='aim'){aim.x=m.x;aim.y=m.y;tracking=true}
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}
+  if(['aim','lost','fire','fire_down','fire_up','reload','mode'].indexOf(m.type)>=0)phone=true;
+  if(m.type==='aim'){raw.x=m.x;raw.y=m.y;tracking=true}
   else if(m.type==='lost')tracking=false;
-  else if(m.type==='fire')fire();
-  else if(m.type==='peer_joined')phone=true;else if(m.type==='peer_left')phone=false}
+  else if(m.type==='fire')shoot();
+  else if(m.type==='fire_down'){holding=true;holdStart=performance.now();shoot()}
+  else if(m.type==='fire_up')holding=false;
+  else if(m.type==='reload')reload();
+  else if(m.type==='mode')setMode(m.assist===undefined?assist:m.assist);
+  else if(m.type==='peer_joined'){phone=true;sendState()}
+  else if(m.type==='peer_left'){phone=false;holding=false}};
  ws.onclose=()=>setTimeout(conn,1000)}
 conn();
-// Testing without the phone: mouse + Enter/click
-addEventListener('mousemove',e=>{aim.x=e.clientX/W;aim.y=e.clientY/H;tracking=true});
-addEventListener('click',fire);addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')fire()});
-function draw(){g.fillStyle='#000';g.fillRect(0,0,W,H);
+
+// ---- game ----
+function spawn(){const sp=assist?.09:.03,a=Math.random()*6.283;
+ targets.push({x:.15+Math.random()*.7,y:.22+Math.random()*.56,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,r:TARGET_R})}
+function ensureTargets(){while(targets.length<targetCount())spawn();while(targets.length>targetCount())targets.pop()}
+function setMode(s){assist=!!s;ammo=magSize();reloadingUntil=0;holding=false;targets=[];ensureTargets();sendState()}
+function eff(){let ax=raw.x*W,ay=raw.y*H;
+ if(assist&&targets.length){let best=null,bd=1e9;
+  for(const t of targets){const d=Math.hypot(ax-t.x*W,ay-t.y*H);if(d<bd){bd=d;best=t}}
+  if(bd<ASSIST_RANGE*H){ax+=(best.x*W-ax)*ASSIST_PULL;ay+=(best.y*H-ay)*ASSIST_PULL}}
+ return {x:ax,y:ay}}
+function burst(t){for(let i=0;i<14;i++){const a=Math.random()*6.283,s=.25+Math.random()*.6;
+ parts.push({x:t.x*W,y:t.y*H,vx:Math.cos(a)*s*H,vy:Math.sin(a)*s*H,rot:Math.random()*6,vr:(Math.random()-.5)*14,sz:H*(.012+Math.random()*.02),born:performance.now(),life:650,col:i%3?'#e33':'#fc0'})}}
+function reload(){const now=performance.now();if(now<reloadingUntil||ammo>=magSize())return;
+ reloadingUntil=now+RELOAD_MS;holding=false;send({type:'reload'});sendState()}
+function shoot(){const now=performance.now();
+ if(now<reloadingUntil||now-lastShot<MIN_GAP_MS)return;
+ if(ammo<=0){reload();return}           // empty: auto-reload so nobody gets stuck
+ lastShot=now;ammo--;shots++;
+ const a=eff();let hit=false;
+ for(let i=0;i<targets.length;i++){const t=targets[i];
+  if(Math.hypot(a.x-t.x*W,a.y-t.y*H)<t.r*H){hit=true;hits++;combo++;if(combo>best)best=combo;burst(t);targets.splice(i,1);break}}
+ if(!hit)combo=0;
+ flash=hit?10:-5;ensureTargets();
+ send({type:'shot',hit,ammo});send({type:'result',hit,score:hits,shots});
+ if(ammo<=0)sendState()}
+function update(dt){
+ for(const t of targets){t.x+=t.vx*dt;t.y+=t.vy*dt;
+  if(t.x<.1){t.x=.1;t.vx=Math.abs(t.vx)}if(t.x>.9){t.x=.9;t.vx=-Math.abs(t.vx)}
+  if(t.y<.14){t.y=.14;t.vy=Math.abs(t.vy)}if(t.y>.86){t.y=.86;t.vy=-Math.abs(t.vy)}}
+ const now=performance.now();
+ for(const p of parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=H*1.2*dt;p.rot+=p.vr*dt}
+ parts=parts.filter(p=>now-p.born<p.life);
+ if(reloadingUntil&&now>=reloadingUntil){reloadingUntil=0;ammo=magSize();sendState()}
+ if(holding&&now-holdStart>=HOLD_MS&&now-lastShot>=AUTO_MS)shoot()}
+
+// ---- input for testing without the phone (desktop mouse/keyboard, Fire TV remote) ----
+addEventListener('mousemove',e=>{raw.x=e.clientX/W;raw.y=e.clientY/H;tracking=true});
+addEventListener('mousedown',()=>{holding=true;holdStart=performance.now();shoot()});
+addEventListener('mouseup',()=>{holding=false});
+addEventListener('keydown',e=>{if(e.repeat)return;
+ if(e.key==='Enter'||e.key===' '){holding=true;holdStart=performance.now();shoot()}
+ else if(e.key==='r'||e.key==='R'||e.key==='ArrowLeft')reload();
+ else if(e.key==='s'||e.key==='S'||e.key==='ArrowRight')setMode(!assist)});
+addEventListener('keyup',e=>{if(e.key==='Enter'||e.key===' ')holding=false});
+
+// ---- drawing ----
+let lastT=performance.now();
+function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);lastT=now;
+ ensureTargets();update(dt);
+ g.fillStyle='#000';g.fillRect(0,0,W,H);
  const b=Math.round(H*.035);g.strokeStyle='#fff';g.lineWidth=b;g.strokeRect(b/2,b/2,W-b,H-b); // fixed tracking border
- if(performance.now()-t.at>2500)newT();
- g.fillStyle=flash>0?'#0f0':'#e33';g.beginPath();g.arc(t.x*W,t.y*H,t.r*H,0,7);g.fill();
- g.fillStyle='#fc0';g.beginPath();g.arc(t.x*W,t.y*H,t.r*H*.4,0,7);g.fill();
+ for(const t of targets){const x=t.x*W,y=t.y*H,r=t.r*H;
+  g.fillStyle=flash>0?'#0f0':'#e33';g.beginPath();g.arc(x,y,r,0,7);g.fill();
+  g.fillStyle='#fff';g.beginPath();g.arc(x,y,r*.66,0,7);g.fill();
+  g.fillStyle='#e33';g.beginPath();g.arc(x,y,r*.4,0,7);g.fill();
+  g.fillStyle='#fc0';g.beginPath();g.arc(x,y,r*.16,0,7);g.fill()}
  if(flash)flash+=flash>0?-1:1;
- if(tracking){const x=aim.x*W,y=aim.y*H;g.strokeStyle='#0cf';g.lineWidth=4;g.beginPath();g.arc(x,y,24,0,7);g.moveTo(x-36,y);g.lineTo(x+36,y);g.moveTo(x,y-36);g.lineTo(x,y+36);g.stroke()}
- g.fillStyle='#8f8';g.font=(H*.04)+'px sans-serif';g.textBaseline='top';
- g.fillText('ROOM '+room+'   '+(phone?(tracking?'AIMING':'TV NOT IN VIEW'):'WAITING FOR PHONE')+'   SCORE '+score+'/'+shots,b*2,b*2);
+ for(const p of parts){g.save();g.translate(p.x,p.y);g.rotate(p.rot);g.globalAlpha=Math.max(0,1-(now-p.born)/p.life);
+  g.fillStyle=p.col;g.fillRect(-p.sz/2,-p.sz/2,p.sz,p.sz*.6);g.restore()}
+ g.globalAlpha=1;
+ if(tracking){const a=eff(),x=a.x,y=a.y;g.strokeStyle=assist?'#fc0':'#0cf';g.lineWidth=4;g.beginPath();g.arc(x,y,24,0,7);g.moveTo(x-36,y);g.lineTo(x+36,y);g.moveTo(x,y-36);g.lineTo(x,y+36);g.stroke()}
+ const fs=H*.036;g.font=fs+'px sans-serif';g.textBaseline='top';g.fillStyle='#8f8';
+ g.fillText('ROOM '+room+'   '+(phone?(tracking?'AIMING':'TV NOT IN VIEW'):'WAITING FOR PHONE'),b*2,b*2);
+ const acc=shots?Math.round(hits*100/shots):0;
+ g.fillText('HITS '+hits+'   SHOTS '+shots+'   ACCURACY '+acc+'%   COMBO '+combo+'   BEST '+best,b*2,b*2+fs*1.3);
+ g.fillStyle='#fc0';g.textBaseline='bottom';
+ g.fillText('AMMO '+ammo+'/'+magSize()+'   TAP = SINGLE   HOLD = FULL AUTO   AIM ASSIST '+(assist?'ON':'OFF'),b*2,H-b*2);
+ g.textAlign='center';g.fillStyle='#f55';g.font='bold '+(H*.07)+'px sans-serif';g.textBaseline='middle';
+ if(now<reloadingUntil)g.fillText('RELOADING...',W/2,H*.5);else if(ammo<=0)g.fillText('RELOAD',W/2,H*.5);
+ g.textAlign='left';
  requestAnimationFrame(draw)}draw();
 </script></body></html>
