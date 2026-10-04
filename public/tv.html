@@ -17,7 +17,7 @@ const ASSIST_PULL=0.6;            // 0 = no pull, 1 = snaps to target
 // ---- state ----
 let raw={x:.5,y:.5}, tracking=false, phone=false;
 let hits=0, shots=0, combo=0, best=0, flash=0;
-let assist=false, ammo=MAG, reloadingUntil=0, holding=false, holdStart=0, lastShot=0;
+let locked=false, assist=false, ammo=MAG, reloadingUntil=0, holding=false, holdStart=0, lastShot=0;
 let targets=[], parts=[];
 const magSize=()=>MAG;
 const targetCount=()=>assist?3:1;
@@ -102,9 +102,15 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  for(const p of parts){g.save();g.translate(p.x,p.y);g.rotate(p.rot);g.globalAlpha=Math.max(0,1-(now-p.born)/p.life);
   g.fillStyle=p.col;g.fillRect(-p.sz/2,-p.sz/2,p.sz,p.sz*.6);g.restore()}
  g.globalAlpha=1;
- if(tracking){const a=eff(),x=a.x,y=a.y;g.strokeStyle=assist?'#fc0':'#0cf';g.lineWidth=4;g.beginPath();g.arc(x,y,24,0,7);g.moveTo(x-36,y);g.lineTo(x+36,y);g.moveTo(x,y-36);g.lineTo(x,y+36);g.stroke()}
+ if(tracking){const a=eff(),x=a.x,y=a.y;
+  const nl=targets.some(t=>Math.hypot(x-t.x*W,y-t.y*H)<t.r*H);
+  if(nl!==locked){locked=nl;send({type:'lock',locked})}
+  g.strokeStyle=locked?'#f33':(assist?'#fc0':'#0cf');g.lineWidth=locked?6:4;
+  g.beginPath();g.arc(x,y,locked?32:24,0,7);g.moveTo(x-36,y);g.lineTo(x+36,y);g.moveTo(x,y-36);g.lineTo(x,y+36);g.stroke();
+  if(locked){g.fillStyle='#f33';g.font='bold '+(H*.035)+'px sans-serif';g.textAlign='center';g.textBaseline='bottom';g.fillText('TARGET LOCKED',x,y-44);g.textAlign='left'}}
+ else if(locked){locked=false;send({type:'lock',locked:false})}
  const fs=H*.036;g.font=fs+'px sans-serif';g.textBaseline='top';g.fillStyle='#8f8';
- g.fillText('ROOM '+room+'   '+(phone?(tracking?'AIMING':'TV NOT IN VIEW'):'WAITING FOR PHONE'),b*2,b*2);
+ g.fillText('ROOM '+room+'   '+(phone?(tracking?'SCREEN LOCKED':'SEARCHING FOR SCREEN'):'WAITING FOR PHONE'),b*2,b*2);
  const acc=shots?Math.round(hits*100/shots):0;
  g.fillText('HITS '+hits+'   SHOTS '+shots+'   ACCURACY '+acc+'%   COMBO '+combo+'   BEST '+best,b*2,b*2+fs*1.3);
  g.fillStyle='#fc0';g.textBaseline='bottom';
