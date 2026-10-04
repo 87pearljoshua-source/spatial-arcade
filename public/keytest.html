@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Button test</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;background:#000;color:#fff;font:26px/1.35 monospace;padding:24px}
+.h{color:#fd4}.ok{color:#4f4}
+#log div{border-bottom:1px solid #333}
+</style></head><body>
+<div class="h">BUTTON TEST. Press every button on the controller and the remote.</div>
+<div id="pad">Gamepads: checking...</div>
+<div id="log"></div>
+<script>
+const log=document.getElementById('log');
+function add(t){const d=document.createElement('div');d.textContent=t;log.insertBefore(d,log.firstChild);
+ while(log.children.length>14)log.removeChild(log.lastChild)}
+['keydown','keyup'].forEach(ev=>addEventListener(ev,e=>{
+ add(ev.toUpperCase()+'  key='+e.key+'  code='+e.code+'  keyCode='+e.keyCode+(e.repeat?'  (repeat)':''));
+ e.preventDefault()},true));
+const last={};
+function poll(){
+ let gp=[];try{gp=(navigator.getGamepads?Array.from(navigator.getGamepads()):[]).filter(Boolean)}catch(e){}
+ document.getElementById('pad').textContent='Gamepads seen by page: '+gp.length+(gp[0]?'  ('+gp[0].id+')':'');
+ gp.forEach((g,gi)=>{
+  g.buttons.forEach((b,i)=>{
+   const k=gi+'b'+i,p=b.pressed||b.value>0.5;
+   if(p!==last[k]){last[k]=p;add('GAMEPAD button '+i+(p?' DOWN':' UP')+'  value='+b.value.toFixed(2))}
+  });
+  g.axes.forEach((a,i)=>{
+   const k=gi+'a'+i,q=Math.round(a*2)/2;
+   if(q!==last[k]){last[k]=q;add('GAMEPAD axis '+i+' = '+a.toFixed(2))}
+  });
+ });
+ requestAnimationFrame(poll);
+}
+poll();
+addEventListener('gamepadconnected',e=>add('Gamepad connected: '+e.gamepad.id));
+add('Page ready');
+</script></body></html>
