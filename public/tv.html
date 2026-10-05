@@ -168,30 +168,126 @@ if(DEBUG){
   else if(e.key==='s'||e.key==='S')setMode(!assist)});
  addEventListener('keyup',e=>{if(e.key==='Enter'||e.key===' ')holding=false})}
 
-// ---- controller + Fire TV remote input (always on) ----
-// Fire: A, R1, R2, OK/Enter, Space.  Reload: X, B, L1, L2, R.  Home: Y, Start, Select, Menu, H.
-// Back/Escape is left alone so you can always leave the app.
-const FIRE_PAD=[0,5,7], RELOAD_PAD=[2,1,4,6], HOME_PAD=[3,8,9];
-const FIRE_KC=[13,23,32,96,103,105], RELOAD_KC=[99,97,102,104], HOME_KC=[100,108,109,82];
+// ---- Fire TV remote + controller input ----
+// Fire TV remote buttons mapped to actions:
+// - OK/Center (keyCode 13) or Enter/Space = FIRE
+// - Back button (Escape/keyCode 27) = MENU/HOME
+// - Rewind (keyCode 227), Fast Forward (keyCode 228) = RELOAD, or individual app-specific buttons
+// 
+// Gamepad buttons (standard layout):
+// Button 0 = A/Cross = FIRE
+// Button 1 = B/Circle = alternative fire
+// Button 2 = X/Square = RELOAD
+// Button 3 = Y/Triangle = HOME
+// Button 4 = LB/L1, Button 5 = RB/R1 = FIRE alternatives
+// Button 6 = LT/L2, Button 7 = RT/R2 = FIRE alternatives
+// Button 8 = Select/Back = HOME
+// Button 9 = Start/Menu = HOME
+//
 const fireSrc={};let lastFD=0;
-function fireDown(src){fireSrc[src]=true;const n=performance.now();if(n-lastFD<120)return;lastFD=n;holding=true;holdStart=n;shoot()}
-function fireUp(src){delete fireSrc[src];if(Object.keys(fireSrc).length===0)holding=false}
+
+function fireDown(src){
+ fireSrc[src]=true;
+ const n=performance.now();
+ if(n-lastFD<120)return;
+ lastFD=n;
+ holding=true;
+ holdStart=n;
+ shoot()}
+
+function fireUp(src){
+ delete fireSrc[src];
+ if(Object.keys(fireSrc).length===0)holding=false}
+
 if(!DEBUG){
- addEventListener('keydown',e=>{const k=e.keyCode,c=e.key;
-  if(FIRE_KC.indexOf(k)>=0||c==='Enter'||c===' '){e.preventDefault();if(!e.repeat)fireDown('k'+k)}
-  else if(RELOAD_KC.indexOf(k)>=0||c==='r'||c==='R'){e.preventDefault();if(!e.repeat)reload()}
-  else if(HOME_KC.indexOf(k)>=0||c==='h'||c==='H'||c==='ContextMenu'){e.preventDefault();if(!e.repeat)goHome()}},true);
- addEventListener('keyup',e=>{const s='k'+e.keyCode;if(fireSrc[s])fireUp(s)},true);
- addEventListener('blur',()=>{for(const s in fireSrc)delete fireSrc[s];holding=false})}
-const padPrev={};
-function pollPads(){let pads=[];try{pads=navigator.getGamepads?Array.from(navigator.getGamepads()):[]}catch(x){}
- pads.forEach((p,pi)=>{if(!p)return;
-  p.buttons.forEach((b,i)=>{const id=pi+':'+i,d=!!(b.pressed||b.value>0.6);
-   if(d===!!padPrev[id])return;padPrev[id]=d;
-   if(FIRE_PAD.indexOf(i)>=0){if(d)fireDown('p'+id);else fireUp('p'+id)}
-   else if(d&&RELOAD_PAD.indexOf(i)>=0)reload();
-   else if(d&&HOME_PAD.indexOf(i)>=0)goHome()})})}
-setInterval(pollPads,8);
+ // Keyboard input for Fire TV remote and generic keyboard
+ addEventListener('keydown',e=>{
+  const k=e.keyCode,c=e.key;
+  
+  // Fire buttons: Enter/Space/OK button (keyCode 13 or 32), or app-specific codes
+  if(k===13||k===32||c==='Enter'||c===' '){
+   e.preventDefault();
+   if(!e.repeat)fireDown('k'+k)
+  }
+  // Reload buttons: R key, or Fire TV app buttons (rewind=227, forward=228)
+  else if(k===82||k===227||k===228||c==='r'||c==='R'){
+   e.preventDefault();
+   if(!e.repeat)reload()
+  }
+  // Home/Menu buttons: Escape, H key, or Fire TV menu buttons
+  else if(k===27||k===72||k===104||k===108||k===109||k===82||c==='h'||c==='H'||c==='ContextMenu'||c==='Escape'){
+   e.preventDefault();
+   if(!e.repeat)goHome()
+  }
+ },true);
+ 
+ addEventListener('keyup',e=>{
+  const s='k'+e.keyCode;
+  if(fireSrc[s])fireUp(s)
+ },true);
+
+ addEventListener('blur',()=>{
+  for(const s in fireSrc)delete fireSrc[s];
+  holding=false
+ });
+
+ // Gamepad polling for Fire TV remote, Xbox controller, PlayStation controller, etc.
+ const padPrev={};
+ function pollPads(){
+  let pads=[];
+  try{
+   pads=navigator.getGamepads?Array.from(navigator.getGamepads()):[]}
+  catch(x){}
+  
+  pads.forEach((p,pi)=>{
+   if(!p)return;
+   
+   // Poll buttons
+   p.buttons.forEach((b,i)=>{
+    const id=pi+':'+i;
+    const d=!!(b.pressed||b.value>0.6);
+    
+    if(d===!!padPrev[id])return;
+    padPrev[id]=d;
+    
+    // Fire: buttons 0 (A), 5 (RB/R1), 7 (RT/R2)
+    if(i===0||i===5||i===7){
+     if(d)fireDown('p'+id);
+     else fireUp('p'+id)
+    }
+    // Reload: buttons 2 (X), 4 (LB/L1), 6 (LT/L2)
+    else if(d&&(i===2||i===4||i===6)){
+     reload()
+    }
+    // Home: buttons 3 (Y), 8 (Select/Back), 9 (Start/Menu), 1 (B - alternate)
+    else if(d&&(i===3||i===8||i===9||i===1)){
+     goHome()
+    }
+   });
+   
+   // Poll analog triggers as fire buttons (some remotes use analog instead of digital)
+   const lt=p.axes[2],rt=p.axes[5];
+   const ltId=pi+':lt',rtId=pi+':rt';
+   const ltPressed=(lt||0)>0.5,rtPressed=(rt||0)>0.5;
+   
+   if(ltPressed!==!!padPrev[ltId]){
+    padPrev[ltId]=ltPressed;
+    if(ltPressed)fireDown('p'+ltId);
+    else fireUp('p'+ltId)
+   }
+   
+   if(rtPressed!==!!padPrev[rtId]){
+    padPrev[rtId]=rtPressed;
+    if(rtPressed)fireDown('p'+rtId);
+    else fireUp('p'+rtId)
+   }
+  });
+  
+  requestAnimationFrame(pollPads)
+ }
+ 
+ setInterval(pollPads,8);
+}
 
 // ---- drawing ----
 let lastT=performance.now();
@@ -218,7 +314,7 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
   g.textAlign='center';g.textBaseline='middle';
   g.font='bold '+(H*.11)+'px monospace';txt('DRONE DROP',W/2,H*.28,'#ff9900');
   g.font='bold '+(H*.04)+'px monospace';
-  txt(phone?'PULL THE TRIGGER TO START':'CONNECT THE PHONE CONTROLLER',W/2,H*.44,'#ffe9b8');
+  txt(phone?'PRESS OK OR FIRE BUTTON TO START':'CONNECT THE PHONE CONTROLLER',W/2,H*.44,'#ffe9b8');
   txt('TAP = SHOOT    HOLD = FULL AUTO',W/2,H*.54,'#9ad');
   txt('RELOAD BUTTON = RELOAD    HOME = MENU',W/2,H*.60,'#9ad');
   if(best)txt('BEST COMBO '+best,W/2,H*.70,'#8f8');
