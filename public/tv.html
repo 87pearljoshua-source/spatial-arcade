@@ -26,14 +26,16 @@ let hits=0, shots=0, combo=0, best=0, escaped=0, flash=0;
 let kick=0, shake=0, recoilY=0, aimSpeed=0, spd=0, lastAimT=0, hitmark=0, marks=[];
 let locked=false, assist=false, ammo=MAG, reloadingUntil=0, holding=false, holdStart=0, lastShot=0;
 let targets=[], parts=[], falls=[], moodK='idle', moodT=0;
-const magSize=()=>MAG;
-const targetCount=()=>scene==='play'?(assist?3:1):0;
+let mode='drone', menuSel=0, R=null, popups=[];   // mode: 'drone' (DRONE DROP) or 'rails' (WAREHOUSE RUN)
+const RAILS_MAG=12, RAIL_LIVES=5;
+const magSize=()=>mode==='rails'?RAILS_MAG:MAG;
+const targetCount=()=>scene==='play'&&mode==='drone'?(assist?3:1):0;
 function mood(k){moodK=k;moodT=performance.now()+(k==='cheer'?900:1100)}
 
 // ---- network ----
 let ws;
 function send(o){try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}catch(e){}}
-function sendState(){send({type:'state',scene,ammo,mag:magSize(),assist,reloading:performance.now()<reloadingUntil,hits,shots})}
+function sendState(){send({type:'state',scene,mode,ammo,mag:magSize(),assist,reloading:performance.now()<reloadingUntil,hits,shots,lives:R?R.lives:undefined})}
 function conn(){
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}
@@ -109,27 +111,30 @@ const sxOf=nx=>(nx*W-IX)/IW*SW, syOf=ny=>(ny*H-IY)/IH*SH;
 function spawn(){const sp=assist?1.35:1,d=Math.random()<.5?-1:1;
  targets.push({x:.12+Math.random()*.76,y:.86,vx:d*(.10+Math.random()*.06)*sp,vy:-(.17+Math.random()*.09)*sp,r:TARGET_R,age:0,life:assist?4.5:6,esc:false,dir:d,ph:Math.random()*6})}
 function ensureTargets(){const n=targetCount();while(targets.length<n)spawn();while(targets.length>n)targets.pop()}
-function clearField(){targets=[];falls=[];parts=[];marks=[];holding=false;reloadingUntil=0;moodT=0}
-function startGame(){hits=0;shots=0;combo=0;escaped=0;ammo=MAG;clearField();scene='play';ensureTargets();sendState()}
-function goHome(){if(scene==='menu')return;scene='menu';ammo=MAG;clearField();locked=false;sendState()}
+function clearField(){targets=[];falls=[];parts=[];marks=[];popups=[];holding=false;reloadingUntil=0;moodT=0}
+function startGame(){hits=0;shots=0;combo=0;escaped=0;mode=menuSel?'rails':'drone';ammo=magSize();clearField();scene='play';R=null;if(mode==='rails')initRails();else ensureTargets();sendState()}
+function goHome(){if(scene==='menu')return;scene='menu';mode='drone';R=null;ammo=MAG;clearField();locked=false;sendState()}
 function setMode(s){assist=!!s;ammo=magSize();reloadingUntil=0;holding=false;targets=[];ensureTargets();sendState()}
-function eff(){let ax=raw.x*W,ay=raw.y*H-recoilY*H;
- if(assist&&targets.length){let best=null,bd=1e9;
-  for(const t of targets){const d=Math.hypot(ax-t.x*W,ay-t.y*H);if(d<bd){bd=d;best=t}}
+function eff(){let ax=raw.x*W,ay=raw.y*H-recoilY*H;const LL=lockList();
+ if(assist&&LL.length){let best=null,bd=1e9;
+  for(const t of LL){const d=Math.hypot(ax-t.x*W,ay-t.y*H);if(d<bd){bd=d;best=t}}
   if(bd<ASSIST_RANGE*H){ax+=(best.x*W-ax)*ASSIST_PULL;ay+=(best.y*H-ay)*ASSIST_PULL}}
  return {x:ax,y:ay}}
-function burst(t){const ps=IW/SW,cols=['#232f3e','#ff9900','#9aa8b8','#c8934a'];
+function burst(t){burstAt(t.x*W,t.y*H)}
+function burstAt(px,py){const ps=IW/SW,cols=['#232f3e','#ff9900','#9aa8b8','#c8934a'];
  for(let i=0;i<18;i++){const a=Math.random()*6.283,s=.25+Math.random()*.6;
-  parts.push({x:t.x*W,y:t.y*H,vx:Math.cos(a)*s*H,vy:Math.sin(a)*s*H,sz:ps*(1+Math.floor(Math.random()*2)),born:performance.now(),life:650,col:cols[i%4]})}}
-function reload(){if(scene!=='play')return;const now=performance.now();if(now<reloadingUntil||ammo>=magSize())return;
- reloadingUntil=now+RELOAD_MS;holding=false;send({type:'reload'});sendState()}
+  parts.push({x:px,y:py,vx:Math.cos(a)*s*H,vy:Math.sin(a)*s*H,sz:ps*(1+Math.floor(Math.random()*2)),born:performance.now(),life:650,col:cols[i%4]})}}
+function reload(){if(scene!=='play')return;const now=performance.now();if(now<reloadingUntil||(ammo>=magSize()&&mode!=='rails'))return;
+ if(mode==='rails'&&(!R||R.phase!=='fight'&&R.phase!=='travel'))return;
+ reloadingUntil=now+(mode==='rails'?900:RELOAD_MS);holding=false;send({type:'reload'});sendState()}
 function shoot(auto){const now=performance.now();
  if(scene==='menu'){startGame();return}  // the first trigger pull starts the game (it does not also fire a shot)
+ if(mode==='rails'&&R){if(R.phase==='over'||R.phase==='win'){if(!auto&&now>R.endAt+700)goHome();return}if(R.phase==='intro')return}
  if(now<reloadingUntil||now-lastShot<MIN_GAP_MS)return;
  if(ammo<=0){reload();return}           // empty: auto-reload so nobody gets stuck
  lastShot=now;ammo--;shots++;
  const a=eff();let hit=false;
- for(let i=0;i<targets.length;i++){const t=targets[i];
+ if(mode==='rails')hit=railsHit(a);else for(let i=0;i<targets.length;i++){const t=targets[i];
   if(Math.hypot(a.x-t.x*W,a.y-t.y*H)<t.r*H){hit=true;hits++;combo++;if(combo>best)best=combo;
    falls.push({x:t.x,y:t.y,vy:.05});burst(t);mood('cheer');targets.splice(i,1);break}}
  if(!hit)combo=0;
@@ -149,12 +154,166 @@ function update(dt){
   if(t.y<-.1||t.x<-.1||t.x>1.1){targets.splice(i,1);escaped++;combo=0;mood('sad')}}
  for(let i=falls.length-1;i>=0;i--){const f=falls[i];f.vy=Math.min(.3,f.vy+.5*dt);f.y+=f.vy*dt;if(f.y>.86)falls.splice(i,1)}
  const now=performance.now();
+ if(scene==='menu'&&tracking){if(raw.x<.45)menuSel=0;else if(raw.x>.55)menuSel=1}
+ if(scene==='play'&&mode==='rails'&&R)updateRails(dt,now);
+ popups=popups.filter(p=>now-p.born<1100);
  for(const p of parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=H*1.2*dt}
  parts=parts.filter(p=>now-p.born<p.life);
  marks=marks.filter(m=>now-m.born<300);
  kick=Math.max(0,kick-dt*7);shake=Math.max(0,shake-dt*6);if(now-lastShot>200)recoilY=Math.max(0,recoilY-dt*.06);
  if(reloadingUntil&&now>=reloadingUntil){reloadingUntil=0;ammo=magSize();sendState()}
  if(holding&&now-holdStart>=HOLD_MS&&now-lastShot>=AUTO_MS)shoot(true)}
+
+// ================= WAREHOUSE RUN: the on-rails mode =================
+// You ride a fixed route. At each stop rogue delivery bots pop up from behind cover and aim at you (a red flash warns you).
+// Shoot them first. RELOAD (or the remote LEFT/DOWN button) = duck into cover: shots that land while you are in cover are blocked.
+// Don't shoot the couriers in yellow vests. Five lives. Three stages, two stops each.
+const STAGES=[
+ {name:'WAREHOUSE',sky:false,back:'#0f1320',ceil:'#1b2233',floor:['#3b4152','#343a4a'],wall:'#262e45',cols:['#c8934a','#a87634','#e8c98a','#8a5a2b']},
+ {name:'LOADING DOCK',sky:true,sk:['#3a2a6a','#7a3a8a','#ee6a7c','#ffb06b'],back:'#2a2a38',floor:['#4a4a55','#42424d'],wall:'#33415c',cols:['#c0482f','#2f6fb0','#e0a33a','#3a8f5a']},
+ {name:'ROOFTOP',sky:true,low:true,sk:['#0a0f2a','#1a2050','#2a2f6a','#4a3a7a'],back:'#0c1024',floor:['#2a2d3a','#252834'],wall:'#1a1f33',cols:['#3a4060','#2c3350']}];
+const scrX=bx=>IX+bx/SW*IW, scrY=by=>IY+by/SH*IH;
+const nxOf=bx=>scrX(bx)/W, nyOf=by=>scrY(by)/H;
+function initRails(){R={stage:0,st:0,phase:'intro',t:0,cam:0,speed:0,lives:RAIL_LIVES,score:0,en:[],hurt:0,invuln:0,endAt:0,grow:0,clean:true}}
+function popup(bx,by,txt,col){popups.push({x:scrX(bx),y:scrY(by),txt,col,born:performance.now()})}
+function ec(e){const k=e.sp.k;return {x:e.sp.x,y:e.sp.y-17*k+(1-e.rise)*26*k}}   // body centre of an enemy (buffer coords)
+function exposed(e){return e.rise>.45&&(e.state==='rise'||e.state==='ready'||e.state==='linger'||e.state==='retreat')}
+function lockList(){
+ if(mode==='rails'){if(!R||R.phase!=='fight')return [];
+  return R.en.filter(e=>e.kind==='bot'&&exposed(e)).map(e=>{const c=ec(e);return {x:nxOf(c.x),y:nyOf(c.y),r:(10*e.sp.k+3)*IW/SW/H}})}
+ return targets}
+function startStation(){const r=R,fin=r.stage===2&&r.st===1;
+ const nb=2+r.stage+r.st+(fin?1:0), nc=r.stage===0?(Math.random()<.5?1:0):1;
+ let cand=[];for(const z of [1.7,2.2,2.8,3.5,4.5])for(const X of [-1.2,-.7,-.25,.25,.7,1.2])cand.push({x:128+X*100/z,y:60+100/z,k:2.4/z});
+ cand.sort(()=>Math.random()-.5);const pick=[];
+ for(const c of cand){if(pick.length>=nb+nc)break;
+  if(pick.every(p=>Math.abs(p.x-c.x)>34*Math.max(p.k,c.k)||Math.abs(p.y-c.y)>24))pick.push(c)}
+ const types=['crate','crate','rack','rack','pallet'];
+ pick.forEach(p=>{p.type=types[Math.floor(Math.random()*types.length)]});
+ r.en=[];
+ pick.forEach((sp,i)=>{
+  if(i<nb)r.en.push({kind:'bot',sp,hp:(r.stage===2&&Math.random()<.35)?2:1,state:'hidden',t:i*.55+Math.random()*.4,rise:0,
+   dur:[1.9,1.6,1.3][r.stage]-r.st*.1+Math.random()*.3,attacks:r.stage===0?1:(r.stage===1?(Math.random()<.5?2:1):2),flash:0,tele:false,age:0});
+  else r.en.push({kind:'courier',sp,hp:1,state:'hidden',t:.8+Math.random()*1.7,rise:0,dur:2.0,attacks:1,flash:0,tele:false,age:0})});
+ r.phase='fight';r.t=0;r.clean=true}
+function nextStation(){const r=R;
+ if(r.st===0){r.st=1;r.phase='travel';r.t=0}
+ else{r.st=0;r.stage++;
+  if(r.stage>2){r.stage=2;r.st=1;r.phase='win';r.endAt=performance.now();holding=false;sendState()}
+  else{r.phase='intro';r.t=0}}
+ ammo=RAILS_MAG;sendState()}
+function hurtPlayer(now,why){const r=R;if(now<r.invuln||r.phase==='over')return;
+ r.lives--;r.invuln=now+700;r.hurt=.5;r.clean=false;combo=0;send({type:'hurt'});
+ if(why)popup(128,60,why,'#f55');
+ if(r.lives<=0){r.lives=0;r.phase='over';r.endAt=now;holding=false}
+ sendState()}
+function stepEnemy(e,dt,now){e.age+=dt;e.flash=Math.max(0,e.flash-dt);
+ switch(e.state){
+  case 'hidden':e.t-=dt;if(e.t<=0){e.state='rise';e.t=.3}break;
+  case 'rise':e.t-=dt;e.rise=Math.min(1,1-e.t/.3);if(e.t<=0){e.rise=1;e.state='ready';e.t=e.dur}break;
+  case 'ready':e.t-=dt;e.tele=e.kind==='bot'&&e.t<.55;
+   if(e.t<=0){
+    if(e.kind==='bot'){e.flash=.15;
+     if(now<reloadingUntil)popup(e.sp.x,e.sp.y-24*e.sp.k,'BLOCKED','#7df');
+     else hurtPlayer(now,'OUCH!')}
+    e.state='linger';e.t=.35;e.tele=false}break;
+  case 'linger':e.t-=dt;if(e.t<=0){e.state='retreat';e.t=.3}break;
+  case 'retreat':e.t-=dt;e.rise=Math.max(0,e.t/.3);
+   if(e.t<=0){e.rise=0;e.attacks--;if(e.attacks>0){e.state='hidden';e.t=.8}else{e.state='gone';if(e.kind==='bot')escaped++}}break}}
+function updateRails(dt,now){const r=R;
+ r.hurt=Math.max(0,r.hurt-dt);r.t+=dt;
+ const goal=r.phase==='travel'?5.5:(r.phase==='intro'?1.2:0);r.speed+=(goal-r.speed)*Math.min(1,dt*3);r.cam+=r.speed*dt;
+ if(r.phase==='intro'&&r.t>2.4){r.phase='travel';r.t=0}
+ else if(r.phase==='travel'&&r.t>2.4)startStation();
+ else if(r.phase==='fight'){
+  r.en.forEach(e=>stepEnemy(e,dt,now));
+  if(r.phase==='fight'&&r.en.every(e=>e.state==='dead'||e.state==='gone')){
+   r.phase='clear';r.t=0;const b=r.clean?300:150;r.score+=b;popup(128,50,r.clean?'PERFECT +300':'STOP CLEARED +150',r.clean?'#8f8':'#ffe9b8');reloadingUntil=0;ammo=RAILS_MAG;sendState()}}
+ else if(r.phase==='clear'&&r.t>1.5)nextStation()}
+function railsHit(a){const r=R;if(!r||r.phase!=='fight')return false;
+ let tgt=null,bd=1e9;
+ for(const e of r.en){if(!exposed(e))continue;const c=ec(e),d=Math.hypot(a.x-scrX(c.x),a.y-scrY(c.y)),lim=(10*e.sp.k+3)*IW/SW;
+  if(d<lim&&d<bd){bd=d;tgt=e}}
+ if(!tgt)return false;
+ const c=ec(tgt);
+ if(tgt.kind==='courier'){tgt.state='gone';popup(c.x,c.y-10,"DON'T SHOOT COURIERS!",'#ff0');hurtPlayer(performance.now(),null);return false}
+ tgt.hp--;
+ if(tgt.hp>0){popup(c.x,c.y-10,'ARMOR!','#9ad');return true}
+ const quick=tgt.state==='ready'&&tgt.t>tgt.dur-.8;
+ tgt.state='dead';hits++;combo++;if(combo>best)best=combo;
+ const gain=Math.round(100*(1+Math.min(combo,10)*.1))+(quick?50:0);r.score+=gain;
+ burstAt(scrX(c.x),scrY(c.y));popup(c.x,c.y-12,(quick?'QUICK! +':'+')+gain,'#ffe9b8');mood('cheer');
+ return true}
+
+// ---- rail-run drawing (pseudo-3D corridor, drawn into the small pixel buffer) ----
+function corridor(s,st,cam){
+ const vx=128,vy=60,K=100,ZF=18,SP=1.6;
+ const P=(X,Y,z)=>[vx+X*K/z,vy+Y*K/z];
+ const Q=(col,...pts)=>{s.fillStyle=col;s.beginPath();pts.forEach((p,i)=>i?s.lineTo(p[0],p[1]):s.moveTo(p[0],p[1]));s.closePath();s.fill()};
+ s.fillStyle=st.back;s.fillRect(0,0,SW,SH);
+ if(st.sky){const n=st.sk.length;for(let i=0;i<n;i++){s.fillStyle=st.sk[i];s.fillRect(0,Math.round(i*vy/n),SW,Math.ceil(vy/n)+1)}
+  for(let i=0;i<14;i++){const bx=i*19-4,bh=8+((i*37)%17);s.fillStyle=st.low?'#0d1230':'#2a2040';s.fillRect(bx,vy-bh,16,bh+2);
+   for(let w=0;w<3;w++)if((i+w)%2){s.fillStyle='#ffd98a';s.fillRect(bx+3+w*4,vy-bh+3,2,2)}}}
+ else Q(st.ceil,P(-1.6,-1.4,.35),P(1.6,-1.4,.35),P(1.6,-1.4,ZF),P(-1.6,-1.4,ZF));
+ Q(st.floor[0],P(-1.6,1,.35),P(1.6,1,.35),P(1.6,1,ZF),P(-1.6,1,ZF));
+ const top=st.low?.3:-1.4;
+ Q(st.wall,P(-1.6,top,.35),P(-1.6,top,ZF),P(-1.6,1,ZF),P(-1.6,1,.35));
+ Q(st.wall,P(1.6,top,.35),P(1.6,top,ZF),P(1.6,1,ZF),P(1.6,1,.35));
+ const rows=st.low?[[.35,.95]]:(st.sky?[[-1.0,.95]]:[[-1.05,-.15],[.0,.9]]);
+ const base=Math.floor(cam/SP),off=cam-base*SP;
+ for(let k=11;k>=0;k--){const id=base+k;let z0=k*SP-off+.35;const z1=z0+SP;if(z1<=.45)continue;z0=Math.max(z0,.45);
+  if(id&1)Q(st.floor[1],P(-1.6,1,z0),P(1.6,1,z0),P(1.6,1,z1),P(-1.6,1,z1));
+  if(st.sky&&!st.low)Q('#e0c040',P(-.05,1,z0),P(.05,1,z0),P(.05,1,z1),P(-.05,1,z1));
+  for(const X of [-1.6,1.6]){
+   rows.forEach((rw,ri)=>{const za=Math.max(.45,z0+.15),zb=Math.max(.5,z1-.15);
+    Q(st.cols[(id*3+ri+(X>0?1:0))%st.cols.length],P(X,rw[0],za),P(X,rw[0],zb),P(X,rw[1],zb),P(X,rw[1],za))})}
+  if(!st.sky&&id%2===0){const za=Math.max(.45,z0+.4),zb=Math.max(.5,z0+.7);Q('#ffe9b8',P(-.35,-1.4,za),P(.35,-1.4,za),P(.35,-1.4,zb),P(-.35,-1.4,zb))}}
+ s.globalAlpha=.4;s.fillStyle=st.back;s.fillRect(0,vy-16,SW,32);s.globalAlpha=1}
+function uR(s,cx,cy,k){return (x,y,w,h,col)=>{s.fillStyle=col;s.fillRect(Math.round(cx+x*k),Math.round(cy+y*k),Math.max(1,Math.round(w*k)),Math.max(1,Math.round(h*k)))}}
+function drawEnemy(s,e,now){const sp=e.sp,k=sp.k,u=uR(s,sp.x,sp.y+(1-e.rise)*26*k,k);
+ const armed=e.state==='ready'||e.state==='linger';
+ if(e.kind==='bot'){
+  u(-5,-6,4,6,'#161d2a');u(1,-6,4,6,'#161d2a');
+  u(-7,-16,14,10,e.hp>1?'#4a5568':'#2b3445');u(-7,-11,14,2,'#ff9900');
+  if(e.hp>1)u(-8,-17,16,3,'#8794a8');
+  u(-5,-23,10,7,'#161d2a');
+  u(-4,-21,8,3,e.tele?((Math.floor(now/70)%2)?'#ffffff':'#ff2a2a'):'#ff7a45');u(-1,-26,2,3,'#9aa8b8');
+  if(armed){u(7,-15,8,2,'#444c5c');u(14,-16,3,4,'#8a96a8');if(e.flash>0)u(17,-17,6,6,'#fff3a0')}
+  else u(7,-14,3,6,'#444c5c')}
+ else{
+  u(-4,-8,3,8,'#2d3a55');u(1,-8,3,8,'#2d3a55');
+  u(-6,-17,12,9,'#ffd21a');u(-6,-13,12,1,'#ffffff');
+  u(-4,-23,8,6,'#e0b48a');u(-5,-25,10,3,'#2a6d3a');
+  u(-5,-12,10,7,'#c8934a');u(-1,-12,2,7,'#e8c98a');
+  if(armed){u(-8,-16,2,5,'#e0b48a');u(6,-16,2,5,'#e0b48a')}}}
+function drawCover(s,sp,gk){const u=uR(s,sp.x,sp.y,sp.k*gk);
+ if(sp.type==='crate'){u(-14,-14,28,14,'#a87634');u(-14,-14,28,2,'#c8934a');u(-1,-14,3,14,'#e8c98a');u(-14,-8,28,1,'#8a5a2b')}
+ else if(sp.type==='pallet'){u(-18,-6,36,6,'#8a6a3a');u(-18,-4,36,1,'#5a4220');u(-18,-6,36,1,'#a68250')}
+ else{u(-15,-16,30,16,'#4b5a73');u(-13,-14,10,6,'#c8934a');u(1,-14,10,6,'#a87634');u(-13,-7,12,6,'#e8c98a');u(3,-7,9,6,'#c8934a');u(-15,-16,30,2,'#6b7a8a')}}
+function drawRails(s,now){const r=R;corridor(s,STAGES[r.stage],r.cam);
+ if(r.phase==='fight'||r.phase==='clear'){const gk=r.phase==='fight'?Math.min(1,r.t*4):1;
+  [...r.en].sort((a,b)=>a.sp.y-b.sp.y).forEach(e=>{
+   if(e.rise>0&&e.state!=='dead'&&e.state!=='gone'&&e.state!=='hidden'){s.save();s.beginPath();s.rect(0,0,SW,e.sp.y);s.clip();drawEnemy(s,e,now);s.restore()}
+   drawCover(s,e.sp,gk)})}}
+function railsHud(now,fs,hx,hy){const r=R;
+ const acc=shots?Math.round(hits*100/shots):0;
+ g.font='bold '+fs+'px monospace';g.textBaseline='top';g.textAlign='left';
+ txt('SCORE '+r.score+'  HITS '+hits+'  ACC '+acc+'%  COMBO '+combo+'  BEST '+best+'  STAGE '+(r.stage+1)+'-'+(r.st+1),hx,hy+fs*1.3,'#ffe9b8');
+ const hs=H*.03;for(let i=0;i<RAIL_LIVES;i++){g.fillStyle=i<r.lives?'#ff3b3b':'#401818';g.fillRect(W-IX-B-(i+1)*hs*1.5,hy,hs,hs)}
+ g.textBaseline='bottom';txt("AMMO "+ammo+"/"+RAILS_MAG+"   RELOAD = TAKE COVER   DON'T SHOOT THE COURIERS",hx,H-IY-B*.4,'#fc0');
+ if(r.hurt>0){g.fillStyle='rgba(255,0,0,'+(r.hurt*.5)+')';g.fillRect(IX,IY,IW,IH)}
+ const cov=now<reloadingUntil;
+ if(cov){g.fillStyle='rgba(5,8,20,.55)';g.fillRect(IX,IY+IH*.45,IW,IH*.55)}
+ g.textAlign='center';g.textBaseline='middle';g.font='bold '+(H*.07)+'px monospace';
+ if(r.phase==='intro'){txt('STAGE '+(r.stage+1),W/2,H*.36,'#ff9900');g.font='bold '+(H*.05)+'px monospace';txt(STAGES[r.stage].name,W/2,H*.47,'#ffe9b8');g.font='bold '+(H*.035)+'px monospace';txt('GET READY',W/2,H*.56,'#9ad')}
+ else if(r.phase==='clear')txt('CLEAR!',W/2,H*.4,'#8f8');
+ else if(r.phase==='over'){txt('GAME OVER',W/2,H*.38,'#f55');g.font='bold '+(H*.045)+'px monospace';txt('SCORE '+r.score,W/2,H*.5,'#ffe9b8');if(now>r.endAt+700)txt('PULL THE TRIGGER FOR THE MENU',W/2,H*.6,'#9ad')}
+ else if(r.phase==='win'){txt('ROUTE COMPLETE',W/2,H*.35,'#8f8');g.font='bold '+(H*.045)+'px monospace';txt('SCORE '+r.score,W/2,H*.47,'#ffe9b8');if(now>r.endAt+700)txt('PULL THE TRIGGER FOR THE MENU',W/2,H*.58,'#9ad')}
+ else if(cov)txt('IN COVER',W/2,H*.62,'#7df');
+ else if(r.phase==='fight'&&ammo<=0)txt('RELOAD',W/2,H*.5,'#f55');
+ g.font='bold '+(H*.04)+'px monospace';
+ for(const p of popups){const age=(now-p.born)/1100;g.globalAlpha=Math.max(0,1-age);txt(p.txt,p.x,p.y-age*H*.08,p.col)}
+ g.globalAlpha=1;g.textAlign='left'}
 
 // ---- debug-only input (page opened with ?debug=1): mouse aims and fires, keys reload/toggle assist/go home ----
 if(DEBUG){
@@ -168,126 +327,34 @@ if(DEBUG){
   else if(e.key==='s'||e.key==='S')setMode(!assist)});
  addEventListener('keyup',e=>{if(e.key==='Enter'||e.key===' ')holding=false})}
 
-// ---- Fire TV remote + controller input ----
-// Fire TV remote buttons mapped to actions:
-// - OK/Center (keyCode 13) or Enter/Space = FIRE
-// - Back button (Escape/keyCode 27) = MENU/HOME
-// - Rewind (keyCode 227), Fast Forward (keyCode 228) = RELOAD, or individual app-specific buttons
-// 
-// Gamepad buttons (standard layout):
-// Button 0 = A/Cross = FIRE
-// Button 1 = B/Circle = alternative fire
-// Button 2 = X/Square = RELOAD
-// Button 3 = Y/Triangle = HOME
-// Button 4 = LB/L1, Button 5 = RB/R1 = FIRE alternatives
-// Button 6 = LT/L2, Button 7 = RT/R2 = FIRE alternatives
-// Button 8 = Select/Back = HOME
-// Button 9 = Start/Menu = HOME
-//
+// ---- controller + Fire TV remote input (always on) ----
+// Fire: A, R1, R2, OK/Enter, Space.  Reload: X, B, L1, L2, R.  Home: Y, Start, Select, Menu, H.
+// Back/Escape is left alone so you can always leave the app.
+const FIRE_PAD=[0,5,7], RELOAD_PAD=[2,1,4,6], HOME_PAD=[3,8,9];
+const FIRE_KC=[13,23,32,96,103,105], RELOAD_KC=[99,97,102,104,37,40,179,85,227,89], HOME_KC=[100,108,109,82];
+const RELOAD_KEYS=['ArrowLeft','ArrowDown','MediaPlayPause','MediaRewind','r','R'];
+let lastUp=0; // Fire TV remote: D-pad UP twice within 0.8s = home (double press so it cannot happen by accident)
 const fireSrc={};let lastFD=0;
-
-function fireDown(src){
- fireSrc[src]=true;
- const n=performance.now();
- if(n-lastFD<120)return;
- lastFD=n;
- holding=true;
- holdStart=n;
- shoot()}
-
-function fireUp(src){
- delete fireSrc[src];
- if(Object.keys(fireSrc).length===0)holding=false}
-
+function fireDown(src){fireSrc[src]=true;const n=performance.now();if(n-lastFD<120)return;lastFD=n;holding=true;holdStart=n;shoot()}
+function fireUp(src){delete fireSrc[src];if(Object.keys(fireSrc).length===0)holding=false}
 if(!DEBUG){
- // Keyboard input for Fire TV remote and generic keyboard
- addEventListener('keydown',e=>{
-  const k=e.keyCode,c=e.key;
-  
-  // Fire buttons: Enter/Space/OK button (keyCode 13 or 32), or app-specific codes
-  if(k===13||k===32||c==='Enter'||c===' '){
-   e.preventDefault();
-   if(!e.repeat)fireDown('k'+k)
-  }
-  // Reload buttons: R key, or Fire TV app buttons (rewind=227, forward=228)
-  else if(k===82||k===227||k===228||c==='r'||c==='R'){
-   e.preventDefault();
-   if(!e.repeat)reload()
-  }
-  // Home/Menu buttons: Escape, H key, or Fire TV menu buttons
-  else if(k===27||k===72||k===104||k===108||k===109||k===82||c==='h'||c==='H'||c==='ContextMenu'||c==='Escape'){
-   e.preventDefault();
-   if(!e.repeat)goHome()
-  }
- },true);
- 
- addEventListener('keyup',e=>{
-  const s='k'+e.keyCode;
-  if(fireSrc[s])fireUp(s)
- },true);
-
- addEventListener('blur',()=>{
-  for(const s in fireSrc)delete fireSrc[s];
-  holding=false
- });
-
- // Gamepad polling for Fire TV remote, Xbox controller, PlayStation controller, etc.
- const padPrev={};
- function pollPads(){
-  let pads=[];
-  try{
-   pads=navigator.getGamepads?Array.from(navigator.getGamepads()):[]}
-  catch(x){}
-  
-  pads.forEach((p,pi)=>{
-   if(!p)return;
-   
-   // Poll buttons
-   p.buttons.forEach((b,i)=>{
-    const id=pi+':'+i;
-    const d=!!(b.pressed||b.value>0.6);
-    
-    if(d===!!padPrev[id])return;
-    padPrev[id]=d;
-    
-    // Fire: buttons 0 (A), 5 (RB/R1), 7 (RT/R2)
-    if(i===0||i===5||i===7){
-     if(d)fireDown('p'+id);
-     else fireUp('p'+id)
-    }
-    // Reload: buttons 2 (X), 4 (LB/L1), 6 (LT/L2)
-    else if(d&&(i===2||i===4||i===6)){
-     reload()
-    }
-    // Home: buttons 3 (Y), 8 (Select/Back), 9 (Start/Menu), 1 (B - alternate)
-    else if(d&&(i===3||i===8||i===9||i===1)){
-     goHome()
-    }
-   });
-   
-   // Poll analog triggers as fire buttons (some remotes use analog instead of digital)
-   const lt=p.axes[2],rt=p.axes[5];
-   const ltId=pi+':lt',rtId=pi+':rt';
-   const ltPressed=(lt||0)>0.5,rtPressed=(rt||0)>0.5;
-   
-   if(ltPressed!==!!padPrev[ltId]){
-    padPrev[ltId]=ltPressed;
-    if(ltPressed)fireDown('p'+ltId);
-    else fireUp('p'+ltId)
-   }
-   
-   if(rtPressed!==!!padPrev[rtId]){
-    padPrev[rtId]=rtPressed;
-    if(rtPressed)fireDown('p'+rtId);
-    else fireUp('p'+rtId)
-   }
-  });
-  
-  requestAnimationFrame(pollPads)
- }
- 
- setInterval(pollPads,8);
-}
+ addEventListener('keydown',e=>{const k=e.keyCode,c=e.key;
+  if(FIRE_KC.indexOf(k)>=0||c==='Enter'||c===' '){e.preventDefault();if(!e.repeat)fireDown('k'+k)}
+  else if(scene==='menu'&&(k===37||k===39||c==='ArrowLeft'||c==='ArrowRight')){e.preventDefault();menuSel=(k===39||c==='ArrowRight')?1:0}
+  else if(RELOAD_KC.indexOf(k)>=0||RELOAD_KEYS.indexOf(c)>=0){e.preventDefault();if(!e.repeat)reload()}
+  else if(k===38||c==='ArrowUp'){e.preventDefault();if(!e.repeat){const n=performance.now();if(n-lastUp<800){lastUp=0;goHome()}else lastUp=n}}
+  else if(HOME_KC.indexOf(k)>=0||c==='h'||c==='H'||c==='ContextMenu'){e.preventDefault();if(!e.repeat)goHome()}},true);
+ addEventListener('keyup',e=>{const s='k'+e.keyCode;if(fireSrc[s])fireUp(s)},true);
+ addEventListener('blur',()=>{for(const s in fireSrc)delete fireSrc[s];holding=false})}
+const padPrev={};
+function pollPads(){let pads=[];try{pads=navigator.getGamepads?Array.from(navigator.getGamepads()):[]}catch(x){}
+ pads.forEach((p,pi)=>{if(!p)return;
+  p.buttons.forEach((b,i)=>{const id=pi+':'+i,d=!!(b.pressed||b.value>0.6);
+   if(d===!!padPrev[id])return;padPrev[id]=d;
+   if(FIRE_PAD.indexOf(i)>=0){if(d)fireDown('p'+id);else fireUp('p'+id)}
+   else if(d&&RELOAD_PAD.indexOf(i)>=0)reload();
+   else if(d&&HOME_PAD.indexOf(i)>=0)goHome()})})}
+setInterval(pollPads,8);
 
 // ---- drawing ----
 let lastT=performance.now();
@@ -296,6 +363,8 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  ensureTargets();update(dt);
  spd+=(aimSpeed-spd)*Math.min(1,dt*10);aimSpeed*=Math.pow(.02,dt);
  const s=sc.getContext('2d');
+ if(scene==='play'&&mode==='rails'&&R)drawRails(s,now);
+ else{
  s.drawImage(bg,0,0);
  for(let i=0;i<3;i++){const cx=((now/1000*(2+i)+i*90)%(SW+50))-25,cy=14+i*13;
   s.fillStyle='#f28aa0';s.fillRect(cx,cy,16,3);s.fillRect(cx+4,cy-2,9,2);s.fillRect(cx+12,cy+1,10,2)}
@@ -303,21 +372,29 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
   drawDrone(s,Math.round(sxOf(t.x)),Math.round(syOf(t.y)+Math.sin(now/180+t.ph)*1.2),fr)}
  for(const f of falls)drawParcel(s,Math.round(sxOf(f.x)),Math.round(syOf(f.y)));
  drawBot(s,now<moodT?moodK:'idle',now);
- s.drawImage(fg,0,0);
+ s.drawImage(fg,0,0)}
  g.fillStyle='#000';g.fillRect(0,0,W,H);
  g.strokeStyle='#fff';g.lineWidth=B;g.strokeRect(B/2,B/2,W-B,H-B);   // fixed tracking border (kept clean: black gutter inside it)
  g.imageSmoothingEnabled=false;   // screen shake moves only the picture; the white tracking border stays put
  g.drawImage(sc,IX+(Math.random()-.5)*shake*IW*.008,IY+(Math.random()-.5)*shake*IH*.012,IW,IH);
  if(flash>0){g.fillStyle='rgba(255,240,200,0.10)';g.fillRect(IX,IY,IW,IH);flash--}
  if(scene==='menu'){
-  g.fillStyle='rgba(8,10,24,0.55)';g.fillRect(IX,IY,IW,IH);
+  g.fillStyle='rgba(8,10,24,0.62)';g.fillRect(IX,IY,IW,IH);
   g.textAlign='center';g.textBaseline='middle';
-  g.font='bold '+(H*.11)+'px monospace';txt('DRONE DROP',W/2,H*.28,'#ff9900');
+  g.font='bold '+(H*.09)+'px monospace';txt('SPATIAL ARCADE',W/2,H*.17,'#ff9900');
+  const opts=[['DRONE DROP','SHOOT THE DELIVERY DRONES','FREE AIM  -  HOLD FOR FULL AUTO'],['WAREHOUSE RUN','ON-RAILS SHOOTER','COVER - DODGE - SAVE COURIERS']];
+  for(let i=0;i<2;i++){const px=W*(i?.53:.08),pw=W*.39,py=H*.29,ph=H*.32,sel=menuSel===i;
+   g.fillStyle=sel?'rgba(255,153,0,.22)':'rgba(40,50,80,.45)';g.fillRect(px,py,pw,ph);
+   g.strokeStyle=sel?'#ff9900':'#556';g.lineWidth=sel?8:3;g.strokeRect(px,py,pw,ph);
+   g.font='bold '+(H*.055)+'px monospace';txt(opts[i][0],px+pw/2,py+ph*.28,sel?'#ffe9b8':'#89a');
+   g.font='bold '+(H*.03)+'px monospace';txt(opts[i][1],px+pw/2,py+ph*.55,sel?'#ffd98a':'#789');
+   g.font='bold '+(H*.024)+'px monospace';txt(opts[i][2],px+pw/2,py+ph*.78,sel?'#9ad':'#678')}
   g.font='bold '+(H*.04)+'px monospace';
-  txt(phone?'PRESS OK OR FIRE BUTTON TO START':'CONNECT THE PHONE CONTROLLER',W/2,H*.44,'#ffe9b8');
-  txt('TAP = SHOOT    HOLD = FULL AUTO',W/2,H*.54,'#9ad');
-  txt('RELOAD BUTTON = RELOAD    HOME = MENU',W/2,H*.60,'#9ad');
-  if(best)txt('BEST COMBO '+best,W/2,H*.70,'#8f8');
+  txt(phone?'AIM LEFT OR RIGHT, THEN PULL THE TRIGGER':'CONNECT THE PHONE CONTROLLER',W/2,H*.70,'#ffe9b8');
+  g.font='bold '+(H*.03)+'px monospace';
+  txt('REMOTE: LEFT / RIGHT TO CHOOSE, OK TO START',W/2,H*.77,'#9ad');
+  txt('TAP = SHOOT    HOLD = FULL AUTO    RELOAD = RELOAD / COVER    HOME = MENU',W/2,H*.83,'#9ad');
+  if(best)txt('BEST COMBO '+best,W/2,H*.90,'#8f8');
   g.textAlign='left'}
  for(const p of parts){g.globalAlpha=Math.max(0,1-(now-p.born)/p.life);g.fillStyle=p.col;g.fillRect(Math.round(p.x),Math.round(p.y),p.sz,p.sz)}
  g.globalAlpha=1;
@@ -328,7 +405,7 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
   g.stroke()}
  g.globalAlpha=1;
  if(tracking){const a=eff(),x=a.x,y=a.y;
-  const nl=targets.some(t=>Math.hypot(x-t.x*W,y-t.y*H)<t.r*H);
+  const nl=lockList().some(t=>Math.hypot(x-t.x*W,y-t.y*H)<t.r*H);
   if(nl!==locked){locked=nl;send({type:'lock',locked})}
   // sight: four ticks that spread when you swing the phone, tighten when steady, and jolt on every shot
   const col=locked?'#f33':(assist?'#fc0':'#0cf'),gap=12+Math.min(28,spd*60)+kick*20-(locked?4:0),len=24;
@@ -345,7 +422,8 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  const fs=H*.034;g.font='bold '+fs+'px monospace';g.textBaseline='top';g.textAlign='left';
  const hx=IX+B,hy=IY+B*.6;
  txt('ROOM '+room+'  '+(phone?(tracking?'SCREEN LOCKED':'SEARCHING FOR SCREEN'):'WAITING FOR PHONE'),hx,hy,'#8f8');
- if(scene==='play'){
+ if(scene==='play'&&mode==='rails'&&R)railsHud(now,fs,hx,hy);
+ if(scene==='play'&&mode==='drone'){
   const acc=shots?Math.round(hits*100/shots):0;
   txt('HITS '+hits+'  SHOTS '+shots+'  ACC '+acc+'%  COMBO '+combo+'  BEST '+best+'  GOT AWAY '+escaped,hx,hy+fs*1.3,'#ffe9b8');
   g.textBaseline='bottom';
