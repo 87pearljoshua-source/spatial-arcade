@@ -49,6 +49,7 @@ function conn(){
   else if(m.type==='fire_up')holding=false;
   else if(m.type==='reload')reload();
   else if(m.type==='home')goHome();
+  else if(m.type==='menu_sel'&&scene==='menu')menuSel=m.v?1:0;
   else if(m.type==='mode')setMode(m.assist===undefined?assist:m.assist);
   else if(m.type==='peer_joined'){phone=true;sendState()}
   else if(m.type==='peer_left'){phone=false;holding=false}};
