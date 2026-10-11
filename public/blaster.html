@@ -53,8 +53,9 @@ let held=false,relT=null,lastReload=0;
 function fireDown(){if(!held){held=true;send({type:'fire_down'});buzz(35);shotSound()}clearTimeout(relT);relT=setTimeout(fireUp,180)}
 function fireUp(){clearTimeout(relT);if(held){held=false;send({type:'fire_up'})}}
 function reload(){const n=Date.now();if(n-lastReload<400)return;lastReload=n;send({type:'reload'});buzz(20)}
-function onMsg(t){add('MESSAGE: '+t,'ok');
+function onMsg(t){add('MESSAGE: '+(t===''?'(empty = release)':t),'ok');
  if(t==='ARGun KeyPressed')fireDown();
+ else if(t==='')fireUp();
  else if(/^B\d+DOWN$/.test(t))reload()}
 $('b3').onclick=()=>{fireDown();add('Test shot sent to room '+room)};
 // ---- Bluetooth ----
@@ -72,7 +73,7 @@ async function connect(all){
  try{
   if(!navigator.bluetooth){add('No Web Bluetooth here. Use Chrome, and open this page directly (not inside another page).','bad');return}
   add('Opening device list...');
-  const o=all?{acceptAllDevices:true,optionalServices:[0xFFF0]}:{filters:[{namePrefix:'ARGUN'}],optionalServices:[0xFFF0]};
+  const o=all?{acceptAllDevices:true,optionalServices:[0xFFF0]}:{filters:[{namePrefix:'ARGun'},{namePrefix:'ARGUN'},{namePrefix:'ARgun'}],optionalServices:[0xFFF0]};
   dev=await navigator.bluetooth.requestDevice(o);add('Picked: '+(dev.name||'(no name)'),'ok');
   dev.addEventListener('gattserverdisconnected',async()=>{
    fireUp();$('st').textContent='Blaster: DISCONNECTED';$('st').className='bad';add('Blaster disconnected','bad');
