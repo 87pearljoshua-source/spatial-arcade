@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hand/Arm Tracking Test</title>
+<style>body{margin:0;background:#111;color:#eee;font:15px system-ui}#w{position:relative}video,canvas{width:100%;display:block}canvas{position:absolute;top:0;left:0}
+#ui{padding:10px}button{font-size:17px;padding:10px 14px;margin:4px 4px 4px 0}pre{white-space:pre-wrap;font-size:14px;background:#000;padding:8px}</style></head><body>
+<div id="w"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+<div id="ui">
+<button id="go">START (front camera)</button><button id="flip">USE BACK CAMERA</button><button id="rep">SHOW RESULT</button>
+<pre id="o">Press START. Prop phone still, stand 6-8 ft (2-2.5 m) away, full body in view. Wave both hands, swing an arm, hold a remote. Run 60 s, then SHOW RESULT.</pre></div>
+<script type="module">
+const $=id=>document.getElementById(id), v=$('v'), c=$('c'), g=c.getContext('2d'), o=$('o');
+let facing='user', stream=null, lm=null, run=false;
+const S={frames:0,both:0,one:0,none:0,inf:[],t0:0,lowVis:0};
+const log=t=>o.textContent=t;
+async function cam(){ if(stream)stream.getTracks().forEach(t=>t.stop());
+ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:640},height:{ideal:480}},audio:false});
+ v.srcObject=stream; await v.play(); c.width=v.videoWidth; c.height=v.videoHeight; }
+async function load(){ log('Loading tracker (needs internet, ~10 MB)...');
+ const m=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+ const fs=await m.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+ const mk=d=>m.PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',delegate:d},runningMode:'VIDEO',numPoses:1});
+ try{lm=await mk('GPU')}catch(e){lm=await mk('CPU')} }
+function loop(){ if(!run)return; const t=performance.now();
+ const r=lm.detectForVideo(v,t); const dt=performance.now()-t; S.inf.push(dt); S.frames++;
+ g.clearRect(0,0,c.width,c.height); let n=0;
+ const p=r.landmarks&&r.landmarks[0];
+ if(p){ for(const i of [15,16]){ const q=p[i]; if((q.visibility??1)>0.5){n++; g.fillStyle='#0f0'; g.beginPath(); g.arc(q.x*c.width,q.y*c.height,10,0,7); g.fill();}}
+  g.strokeStyle='#0ff'; g.lineWidth=3; g.beginPath(); for(const [a,b] of [[11,13],[13,15],[12,14],[14,16],[11,12]]){g.moveTo(p[a].x*c.width,p[a].y*c.height);g.lineTo(p[b].x*c.width,p[b].y*c.height)} g.stroke(); }
+ if(n==2)S.both++; else if(n==1)S.one++; else S.none++;
+ if(S.frames%15==0){const s=(performance.now()-S.t0)/1000; log(`running ${s.toFixed(0)}s  fps ${(S.frames/s).toFixed(1)}  both wrists ${(100*S.both/S.frames).toFixed(0)}%`)}
+ v.requestVideoFrameCallback?v.requestVideoFrameCallback(loop):requestAnimationFrame(loop); }
+function report(){ const s=(performance.now()-S.t0)/1000, a=S.inf.reduce((x,y)=>x+y,0)/Math.max(1,S.inf.length);
+ const so=[...S.inf].sort((x,y)=>x-y), p95=so[Math.floor(so.length*.95)]||0;
+ log(`RESULT (send this to Claude)\ncamera: ${facing}  run: ${s.toFixed(0)} s  frames: ${S.frames}\nfps: ${(S.frames/s).toFixed(1)}\ninference avg ${a.toFixed(0)} ms, p95 ${p.toFixed(0)} ms\nboth wrists seen: ${(100*S.both/S.frames).toFixed(0)}%  one: ${(100*S.one/S.frames).toFixed(0)}%  none: ${(100*S.none/S.frames).toFixed(0)}%\nresolution: ${v.videoWidth}x${v.videoHeight}\nUA: ${navigator.userAgent}`)}
+$('go').onclick=async()=>{ try{ run=false; await cam(); if(!lm)await load(); Object.assign(S,{frames:0,both:0,one:0,none:0,inf:[],t0:performance.now()}); run=true; loop(); }catch(e){log('ERROR: '+e.message)} };
+$('flip').onclick=()=>{facing=facing==='user'?'environment':'user'; $('flip').textContent=facing==='user'?'USE BACK CAMERA':'USE FRONT CAMERA'; $('go').click()};
+$('rep').onclick=report;
+</script></body></html>
