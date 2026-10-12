@@ -4,7 +4,7 @@
 #ui{padding:10px}button{font-size:17px;padding:10px 14px;margin:4px 4px 4px 0}pre{white-space:pre-wrap;font-size:14px;background:#000;padding:8px}</style></head><body>
 <div id="w"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
 <div id="ui">
-<button id="go">START (front camera)</button><button id="flip">USE BACK CAMERA</button><button id="rep">SHOW RESULT</button>
+<button id="go">START (front camera)</button><button id="flip">USE BACK CAMERA</button><button id="rep">STOP + SHOW RESULT</button>
 <pre id="o">Press START. Prop phone still, stand 6-8 ft (2-2.5 m) away, full body in view. Wave both hands, swing an arm, hold a remote. Run 60 s, then SHOW RESULT.</pre></div>
 <script type="module">
 const $=id=>document.getElementById(id), v=$('v'), c=$('c'), g=c.getContext('2d'), o=$('o');
@@ -28,7 +28,7 @@ function loop(){ if(!run)return; const t=performance.now();
  if(n==2)S.both++; else if(n==1)S.one++; else S.none++;
  if(S.frames%15==0){const s=(performance.now()-S.t0)/1000; log(`running ${s.toFixed(0)}s  fps ${(S.frames/s).toFixed(1)}  both wrists ${(100*S.both/S.frames).toFixed(0)}%`)}
  v.requestVideoFrameCallback?v.requestVideoFrameCallback(loop):requestAnimationFrame(loop); }
-function report(){ const s=(performance.now()-S.t0)/1000, a=S.inf.reduce((x,y)=>x+y,0)/Math.max(1,S.inf.length);
+function report(){ run=false; const s=(performance.now()-S.t0)/1000, a=S.inf.reduce((x,y)=>x+y,0)/Math.max(1,S.inf.length);
  const so=[...S.inf].sort((x,y)=>x-y), p95=so[Math.floor(so.length*.95)]||0;
  log(`RESULT (send this to Claude)\ncamera: ${facing}  run: ${s.toFixed(0)} s  frames: ${S.frames}\nfps: ${(S.frames/s).toFixed(1)}\ninference avg ${a.toFixed(0)} ms, p95 ${p.toFixed(0)} ms\nboth wrists seen: ${(100*S.both/S.frames).toFixed(0)}%  one: ${(100*S.one/S.frames).toFixed(0)}%  none: ${(100*S.none/S.frames).toFixed(0)}%\nresolution: ${v.videoWidth}x${v.videoHeight}\nUA: ${navigator.userAgent}`)}
 $('go').onclick=async()=>{ try{ run=false; await cam(); if(!lm)await load(); Object.assign(S,{frames:0,both:0,one:0,none:0,inf:[],t0:performance.now()}); run=true; loop(); }catch(e){log('ERROR: '+e.message)} };
