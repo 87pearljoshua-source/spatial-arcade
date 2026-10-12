@@ -4,13 +4,16 @@
 #ui{padding:10px}button{font-size:17px;padding:10px 14px;margin:4px 4px 4px 0}pre{white-space:pre-wrap;font-size:14px;background:#000;padding:8px}</style></head><body>
 <div id="w"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
 <div id="ui">
-<button id="go">START (front camera)</button><button id="flip">USE BACK CAMERA</button><button id="rep">STOP + SHOW RESULT</button>
+<button id="go">START (10 s countdown, then 60 s)</button><button id="flip">USE BACK CAMERA</button><button id="rep">STOP + SHOW RESULT</button>
 <pre id="o">Press START. Prop phone still, stand 6-8 ft (2-2.5 m) away, full body in view. Wave both hands, swing an arm, hold a remote. Run 60 s, then SHOW RESULT.</pre></div>
 <script type="module">
 const $=id=>document.getElementById(id), v=$('v'), c=$('c'), g=c.getContext('2d'), o=$('o');
 let facing='user', stream=null, lm=null, run=false;
 const S={frames:0,both:0,one:0,none:0,inf:[],t0:0,lowVis:0};
 const log=t=>o.textContent=t;
+const say=t=>{try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.rate=1.1;speechSynthesis.speak(u)}catch(e){}};
+let ac=null,lastBeep=0,lastSay=0;
+const beep=()=>{try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const n=performance.now();if(n-lastBeep<700)return;lastBeep=n;const x=ac.createOscillator(),y=ac.createGain();x.frequency.value=880;y.gain.value=.15;x.connect(y);y.connect(ac.destination);x.start();x.stop(ac.currentTime+.12)}catch(e){}};
 async function cam(){ if(stream)stream.getTracks().forEach(t=>t.stop());
  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:640},height:{ideal:480}},audio:false});
  v.srcObject=stream; await v.play(); c.width=v.videoWidth; c.height=v.videoHeight; }
@@ -19,19 +22,21 @@ async function load(){ log('Loading tracker (needs internet, ~10 MB)...');
  const fs=await m.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
  const mk=d=>m.PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',delegate:d},runningMode:'VIDEO',numPoses:1});
  try{lm=await mk('GPU')}catch(e){lm=await mk('CPU')} }
-function loop(){ if(!run)return; const t=performance.now();
+function loop(){ if(!run)return; if(performance.now()-S.t0>60000){report();return} const t=performance.now();
  const r=lm.detectForVideo(v,t); const dt=performance.now()-t; S.inf.push(dt); S.frames++;
  g.clearRect(0,0,c.width,c.height); let n=0;
  const p=r.landmarks&&r.landmarks[0];
  if(p){ for(const i of [15,16]){ const q=p[i]; if((q.visibility??1)>0.5){n++; g.fillStyle='#0f0'; g.beginPath(); g.arc(q.x*c.width,q.y*c.height,10,0,7); g.fill();}}
   g.strokeStyle='#0ff'; g.lineWidth=3; g.beginPath(); for(const [a,b] of [[11,13],[13,15],[12,14],[14,16],[11,12]]){g.moveTo(p[a].x*c.width,p[a].y*c.height);g.lineTo(p[b].x*c.width,p[b].y*c.height)} g.stroke(); }
+ if(n<2)beep();
  if(n==2)S.both++; else if(n==1)S.one++; else S.none++;
+ {const e=Math.floor((performance.now()-S.t0)/1000);if(e>0&&e%15==0&&e!==lastSay){lastSay=e;say(e+' seconds')}}
  if(S.frames%15==0){const s=(performance.now()-S.t0)/1000; log(`running ${s.toFixed(0)}s  fps ${(S.frames/s).toFixed(1)}  both wrists ${(100*S.both/S.frames).toFixed(0)}%`)}
  v.requestVideoFrameCallback?v.requestVideoFrameCallback(loop):requestAnimationFrame(loop); }
-function report(){ run=false; const s=(performance.now()-S.t0)/1000, a=S.inf.reduce((x,y)=>x+y,0)/Math.max(1,S.inf.length);
+function report(){ run=false; say('Done. Test finished.'); const s=(performance.now()-S.t0)/1000, a=S.inf.reduce((x,y)=>x+y,0)/Math.max(1,S.inf.length);
  const so=[...S.inf].sort((x,y)=>x-y), p95=so[Math.floor(so.length*.95)]||0;
  log(`RESULT (send this to Claude)\ncamera: ${facing}  run: ${s.toFixed(0)} s  frames: ${S.frames}\nfps: ${(S.frames/s).toFixed(1)}\ninference avg ${a.toFixed(0)} ms, p95 ${p.toFixed(0)} ms\nboth wrists seen: ${(100*S.both/S.frames).toFixed(0)}%  one: ${(100*S.one/S.frames).toFixed(0)}%  none: ${(100*S.none/S.frames).toFixed(0)}%\nresolution: ${v.videoWidth}x${v.videoHeight}\nUA: ${navigator.userAgent}`)}
-$('go').onclick=async()=>{ try{ run=false; await cam(); if(!lm)await load(); Object.assign(S,{frames:0,both:0,one:0,none:0,inf:[],t0:performance.now()}); run=true; loop(); }catch(e){log('ERROR: '+e.message)} };
+$('go').onclick=async()=>{ try{ run=false; await cam(); if(!lm)await load(); say('Get in position. Ten seconds. A beep means a wrist is not visible.');for(let i=10;i>0;i--){if(i==3)say('three, two, one, go');log('GET IN POSITION. Starting in '+i+' s. Test then runs 60 s by itself and shows the result. Keep moving your arms the whole time.');await new Promise(r=>setTimeout(r,1000))} Object.assign(S,{frames:0,both:0,one:0,none:0,inf:[],t0:performance.now()}); run=true; loop(); }catch(e){log('ERROR: '+e.message)} };
 $('flip').onclick=()=>{facing=facing==='user'?'environment':'user'; $('flip').textContent=facing==='user'?'USE BACK CAMERA':'USE FRONT CAMERA'; $('go').click()};
 $('rep').onclick=report;
 </script></body></html>
