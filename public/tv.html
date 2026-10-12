@@ -26,16 +26,16 @@ let hits=0, shots=0, combo=0, best=0, escaped=0, flash=0;
 let kick=0, shake=0, recoilY=0, aimSpeed=0, spd=0, lastAimT=0, hitmark=0, marks=[];
 let locked=false, assist=false, ammo=MAG, reloadingUntil=0, holding=false, holdStart=0, lastShot=0;
 let targets=[], parts=[], falls=[], moodK='idle', moodT=0;
-let mode='drone', menuSel=0, R=null, popups=[];   // mode: 'drone' (DRONE DROP) or 'rails' (WAREHOUSE RUN)
+let mode='drone', menuSel=0, R=null, SK=null, popups=[];   // mode: 'drone' (DRONE DROP) or 'rails' (WAREHOUSE RUN)
 const RAILS_MAG=12, RAIL_LIVES=5;
-const magSize=()=>mode==='rails'?RAILS_MAG:MAG;
+const magSize=()=>mode==='rails'?RAILS_MAG:(mode==='sky'?99:MAG);
 const targetCount=()=>scene==='play'&&mode==='drone'?(assist?3:1):0;
 function mood(k){moodK=k;moodT=performance.now()+(k==='cheer'?900:1100)}
 
 // ---- network ----
 let ws;
 function send(o){try{if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}catch(e){}}
-function sendState(){send({type:'state',scene,mode,ammo,mag:magSize(),assist,reloading:performance.now()<reloadingUntil,hits,shots,lives:R?R.lives:undefined})}
+function sendState(){send({type:'state',scene,mode,ammo,mag:magSize(),assist,reloading:performance.now()<reloadingUntil,hits,shots,lives:R?R.lives:(SK?SK.lives:undefined)})}
 function conn(){
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}
@@ -49,7 +49,7 @@ function conn(){
   else if(m.type==='fire_up')holding=false;
   else if(m.type==='reload')reload();
   else if(m.type==='home')goHome();
-  else if(m.type==='menu_sel'&&scene==='menu')menuSel=m.v?1:0;
+  else if(m.type==='menu_sel'&&scene==='menu')menuSel=Math.max(0,Math.min(2,menuSel+(m.v?1:-1)));
   else if(m.type==='mode')setMode(m.assist===undefined?assist:m.assist);
   else if(m.type==='peer_joined'){phone=true;sendState()}
   else if(m.type==='peer_left'){phone=false;holding=false}};
@@ -113,8 +113,8 @@ function spawn(){const sp=assist?1.35:1,d=Math.random()<.5?-1:1;
  targets.push({x:.12+Math.random()*.76,y:.86,vx:d*(.10+Math.random()*.06)*sp,vy:-(.17+Math.random()*.09)*sp,r:TARGET_R,age:0,life:assist?4.5:6,esc:false,dir:d,ph:Math.random()*6})}
 function ensureTargets(){const n=targetCount();while(targets.length<n)spawn();while(targets.length>n)targets.pop()}
 function clearField(){targets=[];falls=[];parts=[];marks=[];popups=[];holding=false;reloadingUntil=0;moodT=0}
-function startGame(){hits=0;shots=0;combo=0;escaped=0;mode=menuSel?'rails':'drone';ammo=magSize();clearField();scene='play';R=null;if(mode==='rails')initRails();else ensureTargets();sendState()}
-function goHome(){if(scene==='menu')return;scene='menu';mode='drone';R=null;ammo=MAG;clearField();locked=false;sendState()}
+function startGame(){hits=0;shots=0;combo=0;escaped=0;mode=['drone','rails','sky'][menuSel]||'drone';ammo=magSize();clearField();scene='play';R=null;SK=null;if(mode==='rails')initRails();else if(mode==='sky')initSky();else ensureTargets();sendState()}
+function goHome(){if(scene==='menu')return;scene='menu';mode='drone';R=null;SK=null;ammo=MAG;clearField();locked=false;sendState()}
 function setMode(s){assist=!!s;ammo=magSize();reloadingUntil=0;holding=false;targets=[];ensureTargets();sendState()}
 function eff(){let ax=raw.x*W,ay=raw.y*H-recoilY*H;const LL=lockList();
  if(assist&&LL.length){let best=null,bd=1e9;
@@ -125,11 +125,12 @@ function burst(t){burstAt(t.x*W,t.y*H)}
 function burstAt(px,py){const ps=IW/SW,cols=['#232f3e','#ff9900','#9aa8b8','#c8934a'];
  for(let i=0;i<18;i++){const a=Math.random()*6.283,s=.25+Math.random()*.6;
   parts.push({x:px,y:py,vx:Math.cos(a)*s*H,vy:Math.sin(a)*s*H,sz:ps*(1+Math.floor(Math.random()*2)),born:performance.now(),life:650,col:cols[i%4]})}}
-function reload(){if(scene!=='play')return;const now=performance.now();if(now<reloadingUntil||(ammo>=magSize()&&mode!=='rails'))return;
+function reload(){if(scene!=='play'||mode==='sky')return;const now=performance.now();if(now<reloadingUntil||(ammo>=magSize()&&mode!=='rails'))return;
  if(mode==='rails'&&(!R||R.phase!=='fight'&&R.phase!=='travel'))return;
  reloadingUntil=now+(mode==='rails'?900:RELOAD_MS);holding=false;send({type:'reload'});sendState()}
 function shoot(auto){const now=performance.now();
  if(scene==='menu'){startGame();return}  // the first trigger pull starts the game (it does not also fire a shot)
+ if(mode==='sky'&&SK){skyShoot(auto);return}
  if(mode==='rails'&&R){if(R.phase==='over'||R.phase==='win'){if(!auto&&now>R.endAt+700)goHome();return}if(R.phase==='intro')return}
  if(now<reloadingUntil||now-lastShot<MIN_GAP_MS)return;
  if(ammo<=0){reload();return}           // empty: auto-reload so nobody gets stuck
@@ -155,7 +156,8 @@ function update(dt){
   if(t.y<-.1||t.x<-.1||t.x>1.1){targets.splice(i,1);escaped++;combo=0;mood('sad')}}
  for(let i=falls.length-1;i>=0;i--){const f=falls[i];f.vy=Math.min(.3,f.vy+.5*dt);f.y+=f.vy*dt;if(f.y>.86)falls.splice(i,1)}
  const now=performance.now();
- if(scene==='menu'&&tracking){if(raw.x<.45)menuSel=0;else if(raw.x>.55)menuSel=1}
+ if(scene==='menu'&&tracking){menuSel=raw.x<.36?0:(raw.x>.64?2:1)}
+ if(scene==='play'&&mode==='sky'&&SK)updateSky(dt,now);
  if(scene==='play'&&mode==='rails'&&R)updateRails(dt,now);
  popups=popups.filter(p=>now-p.born<1100);
  for(const p of parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=H*1.2*dt}
@@ -180,6 +182,7 @@ function popup(bx,by,txt,col){popups.push({x:scrX(bx),y:scrY(by),txt,col,born:pe
 function ec(e){const k=e.sp.k;return {x:e.sp.x,y:e.sp.y-17*k+(1-e.rise)*26*k}}   // body centre of an enemy (buffer coords)
 function exposed(e){return e.rise>.45&&(e.state==='rise'||e.state==='ready'||e.state==='linger'||e.state==='retreat')}
 function lockList(){
+ if(mode==='sky')return skyLock();
  if(mode==='rails'){if(!R||R.phase!=='fight')return [];
   return R.en.filter(e=>e.kind==='bot'&&exposed(e)).map(e=>{const c=ec(e);return {x:nxOf(c.x),y:nyOf(c.y),r:(10*e.sp.k+3)*IW/SW/H}})}
  return targets}
@@ -316,6 +319,126 @@ function railsHud(now,fs,hx,hy){const r=R;
  for(const p of popups){const age=(now-p.born)/1100;g.globalAlpha=Math.max(0,1-age);txt(p.txt,p.x,p.y-age*H*.08,p.col)}
  g.globalAlpha=1;g.textAlign='left'}
 
+// ================= SKY DELIVERY: top-down parcel drops, then the UAP invasion =================
+// Phase 1: you are the delivery drone. Aim at a doormat and drop the parcel (it takes a moment to fall, so lead the house).
+// Phase 2: unidentified aerial phenomena (UAPs) arrive. The drone is armed and you fight them off with lasers. Shoot their orbs too.
+// Add &fast=1 to the TV address to start the invasion after 22 seconds (or 4 deliveries) instead of 2 minutes (or 14 deliveries).
+const SKY_LIVES=5, SKY_T=qp.has('fast')?22:120, SKY_QUOTA=qp.has('fast')?4:14, SKY_FALL=.9, SKY_SCROLL=8;
+function initSky(){SK={phase:'deliver',t:0,tw:0,score:0,delivered:0,missed:0,lives:SKY_LIVES,houses:[],pk:[],en:[],orbs:[],beam:null,wave:0,wt:0,spawnT:.4,hurt:0,invuln:0,endAt:0,scroll:0}}
+function skyLock(){const r=SK;if(!r)return [];
+ if(r.phase==='deliver')return r.houses.filter(h=>!h.delivered&&h.y>-8&&h.y<138).map(h=>({x:nxOf(h.x),y:nyOf(h.y+11),r:8*IW/SW/H}));
+ if(r.phase==='war'){const L=r.orbs.map(o=>({x:nxOf(o.x),y:nyOf(o.y),r:7*IW/SW/H}));
+  for(const e of r.en)if(!e.dead&&e.y>0)L.push({x:nxOf(e.x),y:nyOf(e.y),r:(e.kind==='boss'?19:11)*IW/SW/H});return L}
+ return []}
+function skyHurt(now,why){const r=SK;if(!r||now<r.invuln||r.phase==='over'||r.phase==='win')return;
+ r.lives--;r.invuln=now+700;r.hurt=.5;combo=0;send({type:'hurt'});if(why)popup(128,112,why,'#f55');
+ if(r.lives<=0){r.lives=0;r.phase='over';r.endAt=now;holding=false}
+ sendState()}
+function spawnWave(n){const r=SK;r.en=[];r.orbs=[];
+ const mk=(kind,cx,ty,hp)=>r.en.push({kind,x:cx,y:kind==='boss'?-26:-12,cx,ty,hp,t:0,ph:Math.random()*6,fireT:1.4+Math.random()*1.6,flash:0,dead:false});
+ if(n===3){mk('boss',128,26,16);mk('sau',60,50,2);mk('sau',196,50,2)}
+ else{const cnt=n===1?4:6;for(let i=0;i<cnt;i++)mk('sau',34+i*(188/(cnt-1)),16+(i%2)*18,n===2&&i%3===0?2:1)}}
+function skyLand(p){const r=SK;let hs=null,bd=1e9;
+ for(const h of r.houses){if(h.delivered)continue;const d=Math.hypot(p.x-h.x,p.y-(h.y+11));if(d<bd){bd=d;hs=h}}
+ if(hs&&bd<9){hs.delivered=true;r.delivered++;hits++;combo++;if(combo>best)best=combo;
+  const perfect=bd<4,gain=100+(perfect?100:0)+Math.min(combo,10)*10;r.score+=gain;
+  burstAt(scrX(p.x),scrY(p.y));popup(p.x,p.y-10,(perfect?'PERFECT +':'+')+gain,perfect?'#8f8':'#ffe9b8');send({type:'shot',hit:true,ammo})}
+ else{combo=0;popup(p.x,p.y-8,'MISSED','#f95')}}
+function updateSky(dt,now){const r=SK;
+ r.t+=dt;r.hurt=Math.max(0,r.hurt-dt);r.scroll+=SKY_SCROLL*dt;
+ if(r.phase==='deliver'){r.spawnT-=dt;
+  const vis=r.houses.filter(h=>!h.delivered&&h.y>-14&&h.y<150).length;
+  if(r.spawnT<=0&&vis<4){const x=26+Math.random()*204;
+   if(r.houses.every(h=>h.y>24||Math.abs(h.x-x)>28)){r.houses.push({x,y:-14,delivered:false,col:['#b5483a','#3a6fb5','#d9a23a','#4a9a5a','#8a5ab5'][Math.floor(Math.random()*5)]});r.spawnT=.9+Math.random()*.9}else r.spawnT=.15}
+  else if(r.spawnT<=0)r.spawnT=.3}
+ for(const h of r.houses)h.y+=SKY_SCROLL*dt;
+ for(let i=r.houses.length-1;i>=0;i--){const h=r.houses[i];if(h.y>160){if(!h.delivered&&r.phase==='deliver'){r.missed++;combo=0}r.houses.splice(i,1)}}
+ for(let i=r.pk.length-1;i>=0;i--){const p=r.pk[i];p.t+=dt;if(p.t>=SKY_FALL){r.pk.splice(i,1);skyLand(p)}}
+ if(r.phase==='deliver'){if(r.t>=SKY_T||r.delivered>=SKY_QUOTA){r.phase='warn';r.tw=0;sendState()}}
+ else if(r.phase==='warn'){r.tw+=dt;if(r.tw>3.4){r.phase='war';r.wave=1;r.wt=0;spawnWave(1);sendState()}}
+ else if(r.phase==='war'){
+  for(const e of r.en){if(e.dead)continue;e.t+=dt;e.flash=Math.max(0,e.flash-dt);
+   e.y+=(e.ty-e.y)*Math.min(1,dt*1.5);e.x=e.cx+Math.sin(e.t*(e.kind==='boss'?.8:1.2)+e.ph)*(e.kind==='boss'?70:36);
+   e.fireT-=dt;
+   if(e.fireT<=0&&e.y>e.ty-6){e.fireT=(e.kind==='boss'?.9:2)+Math.random()*(e.kind==='boss'?.5:1.4);
+    const tx=128+(Math.random()-.5)*60,dx=tx-e.x,dy=128-e.y,L=Math.hypot(dx,dy)||1,sp=e.kind==='boss'?34:26;
+    r.orbs.push({x:e.x,y:e.y+4,vx:dx/L*sp,vy:dy/L*sp})}}
+  for(let i=r.orbs.length-1;i>=0;i--){const o=r.orbs[i];o.x+=o.vx*dt;o.y+=o.vy*dt;if(o.y>=128){r.orbs.splice(i,1);skyHurt(now,'HIT!')}}
+  if(r.phase==='war'&&r.en.every(e=>e.dead)){r.wt+=dt;
+   if(r.wt>1.8){r.wt=0;if(r.wave>=3){r.phase='win';r.endAt=now;holding=false;sendState()}else{r.wave++;spawnWave(r.wave);sendState()}}}}}
+function skyShoot(auto){const r=SK,now=performance.now();
+ if(r.phase==='over'||r.phase==='win'){if(!auto&&now>r.endAt+700)goHome();return}
+ if(r.phase==='warn')return;
+ if(now-lastShot<(r.phase==='deliver'?450:MIN_GAP_MS))return;
+ lastShot=now;shots++;
+ const a=eff(),bx=(a.x-IX)/IW*SW,by=(a.y-IY)/IH*SH;let hit=false;
+ if(r.phase==='deliver')r.pk.push({x:bx,y:by,t:0});
+ else{r.beam={x:bx,y:by,until:now+90};
+  for(let i=0;i<r.orbs.length;i++){const o=r.orbs[i];if(Math.hypot(bx-o.x,by-o.y)<7){r.orbs.splice(i,1);r.score+=25;hit=true;burstAt(scrX(o.x),scrY(o.y));break}}
+  if(!hit)for(const e of r.en){if(e.dead)continue;
+   if(Math.hypot(bx-e.x,by-e.y)<(e.kind==='boss'?19:11)){hit=true;e.hp--;e.flash=.12;
+    if(e.hp<=0){e.dead=true;r.score+=e.kind==='boss'?1000:200;burstAt(scrX(e.x),scrY(e.y));popup(e.x,e.y-10,e.kind==='boss'?'+1000':'+200','#ffe9b8')}
+    else popup(e.x,e.y-10,'HIT','#9ad');break}}
+  if(hit){hits++;combo++;if(combo>best)best=combo}else combo=0}
+ flash=hit?10:5;kick=1;shake=Math.min(1,shake+.5);if(r.phase==='war')marks.push({x:a.x,y:a.y,born:now,hit});
+ if(hit)hitmark=now+160;
+ send({type:'shot',hit,ammo});send({type:'result',hit,score:hits,shots})}
+
+// ---- drawing ----
+function drawUAP(s,x,y,k,now,flashing,boss){
+ const R=(dx,dy,w,h,col)=>{s.fillStyle=col;s.fillRect(Math.round(x+dx*k),Math.round(y+dy*k),Math.max(1,Math.round(w*k)),Math.max(1,Math.round(h*k)))};
+ R(-3,-6,6,3,flashing?'#fff':'#7fe8e0');R(-2,-7,4,1,flashing?'#fff':'#bff');          // glass dome
+ R(-8,-3,16,3,flashing?'#fff':'#aab4c8');R(-6,0,12,2,flashing?'#fff':'#667088');R(-3,2,6,1,'#3a4058');   // hull
+ const on=Math.floor(now/180)%2;
+ R(-6,-2,2,1,on?'#ffe040':'#a07000');R(-1,-2,2,1,on?'#a07000':'#ffe040');R(4,-2,2,1,on?'#ffe040':'#a07000');
+ if(boss){R(-10,-1,3,2,'#ff3b6b');R(7,-1,3,2,'#ff3b6b')}}
+function drawHero(s,x,y,armed,now){
+ const R=(dx,dy,w,h,col)=>{s.fillStyle=col;s.fillRect(x+dx,y+dy,w,h)},f=Math.floor(now/60)%2;
+ R(-9,-1,18,1,'#37475a');R(-10,-3,5,1,f?'#9aa8b8':'#6b7a8a');R(5,-3,5,1,f?'#6b7a8a':'#9aa8b8');R(-10,2,5,1,f?'#6b7a8a':'#9aa8b8');R(5,2,5,1,f?'#9aa8b8':'#6b7a8a');
+ R(-4,-3,8,6,'#232f3e');R(-4,0,8,1,'#ff9900');R(-1,-2,2,1,'#37475a');
+ if(armed){R(-6,-8,1,5,'#ff3b6b');R(5,-8,1,5,'#ff3b6b');R(-6,-9,1,1,'#ffd0dc');R(5,-9,1,1,'#ffd0dc')}
+ else{R(-3,3,6,4,'#c8934a');R(-3,5,6,1,'#a87634');R(-1,3,2,4,'#e8c98a')}}
+function drawSky(s,now){const r=SK,warn=r.phase==='warn',dark=warn?Math.min(.5,r.tw/3.4*.5):(r.phase==='deliver'?0:.5);
+ s.fillStyle='#2f5d3a';s.fillRect(0,0,SW,SH);
+ s.fillStyle='#36703f';for(let i=0;i<44;i++)s.fillRect((i*53)%SW,Math.round((i*97+r.scroll)%SH),3,1);
+ for(let i=0;i<4;i++){const y=Math.round(((i*52+r.scroll)%208)-32);s.fillStyle='#3b3f4a';s.fillRect(0,y,SW,12);s.fillStyle='#c9b13a';for(let x=0;x<SW;x+=24)s.fillRect(x+4,y+5,10,2)}
+ for(const h of r.houses){const x=Math.round(h.x),y=Math.round(h.y);
+  s.fillStyle=h.col;s.fillRect(x-9,y-7,18,14);s.fillStyle='rgba(0,0,0,.28)';s.fillRect(x-9,y+4,18,3);s.fillRect(x+1,y-7,8,2);
+  s.fillStyle='#555d6e';s.fillRect(x+4,y-6,3,3);
+  s.fillStyle='#f4ecd8';s.fillRect(x-5,y+9,10,5);
+  if(h.delivered){s.fillStyle='#c8934a';s.fillRect(x-3,y+9,6,5);s.fillStyle='#e8c98a';s.fillRect(x-1,y+9,2,5)}
+  else{s.fillStyle='#ff9900';s.fillRect(x-3,y+10,6,3);
+   if(r.phase==='deliver'&&Math.floor(now/260)%2){s.fillStyle='#fff';s.fillRect(x-7,y+7,1,9);s.fillRect(x+6,y+7,1,9);s.fillRect(x-7,y+7,14,1);s.fillRect(x-7,y+15,14,1)}}}
+ for(const p of r.pk){const pr=Math.min(1,p.t/SKY_FALL),yy=Math.round(p.y-(1-pr)*26),sz=Math.round(5+(1-pr)*3);
+  s.fillStyle='rgba(0,0,0,.35)';s.fillRect(Math.round(p.x)-3,Math.round(p.y)-1,7,3);
+  s.fillStyle='#fff';s.fillRect(Math.round(p.x)-3,Math.round(p.y),7,1);s.fillRect(Math.round(p.x),Math.round(p.y)-3,1,7);
+  s.fillStyle='#c8934a';s.fillRect(Math.round(p.x-sz/2),yy-Math.round(sz/2),sz,sz);s.fillStyle='#e8c98a';s.fillRect(Math.round(p.x)-1,yy-Math.round(sz/2),2,sz)}
+ if(dark>0){s.fillStyle='rgba(10,0,40,'+dark+')';s.fillRect(0,0,SW,SH)}
+ if(warn){const pu=.08+.08*Math.sin(now/110);s.fillStyle='rgba(255,0,0,'+pu+')';s.fillRect(0,0,SW,SH);
+  const pr=r.tw/3.4;for(let i=0;i<3;i++)drawUAP(s,50+i*78,-8+pr*34+i*2,1.2,now,false,false)}
+ if(r.phase==='war'||r.phase==='over'||r.phase==='win'){
+  for(const e of r.en)if(!e.dead)drawUAP(s,e.x,e.y,e.kind==='boss'?2:1,now,e.flash>0,e.kind==='boss');
+  for(const o of r.orbs){s.fillStyle='#ff44ee';s.fillRect(Math.round(o.x)-2,Math.round(o.y)-2,4,4);s.fillStyle='#fff';s.fillRect(Math.round(o.x)-1,Math.round(o.y)-1,2,2)}
+  if(r.beam&&now<r.beam.until){s.strokeStyle='#bff';s.lineWidth=2;s.beginPath();s.moveTo(128,124);s.lineTo(r.beam.x,r.beam.y);s.stroke();s.strokeStyle='#fff';s.lineWidth=1;s.stroke()}}
+ drawHero(s,128,130,r.phase!=='deliver'&&r.phase!=='warn',now)}
+function skyHud(now,fs,hx,hy){const r=SK;
+ const acc=shots?Math.round(hits*100/shots):0;
+ g.font='bold '+fs+'px monospace';g.textBaseline='top';g.textAlign='left';
+ txt('SCORE '+r.score+'  DELIVERED '+r.delivered+'  ACC '+acc+'%  COMBO '+combo+'  BEST '+best+(r.phase==='war'?'  WAVE '+r.wave+'/3':''),hx,hy+fs*1.3,'#ffe9b8');
+ const hs=H*.03;for(let i=0;i<SKY_LIVES;i++){g.fillStyle=i<r.lives?'#ff3b3b':'#401818';g.fillRect(W-IX-B-(i+1)*hs*1.5,hy,hs,hs)}
+ g.textBaseline='bottom';
+ if(r.phase==='deliver')txt('TAP = DROP   AIM AT THE DOORMAT   TIME '+Math.max(0,Math.ceil(SKY_T-r.t)),hx,H-IY-B*.4,'#fc0');
+ else if(r.phase==='war')txt('HOLD = RAPID LASERS   SHOOT THE ORBS',hx,H-IY-B*.4,'#fc0');
+ if(r.hurt>0){g.fillStyle='rgba(255,0,0,'+(r.hurt*.5)+')';g.fillRect(IX,IY,IW,IH)}
+ g.textAlign='center';g.textBaseline='middle';g.font='bold '+(H*.06)+'px monospace';
+ if(r.phase==='warn'){if(Math.floor(now/250)%2)txt('UNIDENTIFIED AERIAL PHENOMENA',W/2,H*.38,'#ff4b4b');g.font='bold '+(H*.045)+'px monospace';txt('ALL DRONES ARMED. DEFEND THE DELIVERIES!',W/2,H*.5,'#ffe9b8')}
+ else if(r.phase==='war'&&r.t>0&&r.en.length&&r.en.every(e=>e.dead))txt(r.wave>=3?'THEY ARE RETREATING!':'WAVE CLEAR',W/2,H*.4,'#8f8');
+ else if(r.phase==='over'){txt('GAME OVER',W/2,H*.38,'#f55');g.font='bold '+(H*.045)+'px monospace';txt('SCORE '+r.score,W/2,H*.5,'#ffe9b8');if(now>r.endAt+700)txt('PULL THE TRIGGER FOR THE MENU',W/2,H*.6,'#9ad')}
+ else if(r.phase==='win'){txt('EARTH IS SAFE. DELIVERIES RESUME!',W/2,H*.35,'#8f8');g.font='bold '+(H*.045)+'px monospace';txt('SCORE '+r.score,W/2,H*.47,'#ffe9b8');if(now>r.endAt+700)txt('PULL THE TRIGGER FOR THE MENU',W/2,H*.58,'#9ad')}
+ g.font='bold '+(H*.04)+'px monospace';
+ for(const p of popups){const age=(now-p.born)/1100;g.globalAlpha=Math.max(0,1-age);txt(p.txt,p.x,p.y-age*H*.08,p.col)}
+ g.globalAlpha=1;g.textAlign='left'}
+
 // ---- debug-only input (page opened with ?debug=1): mouse aims and fires, keys reload/toggle assist/go home ----
 if(DEBUG){
  addEventListener('mousemove',e=>{raw.x=e.clientX/W;raw.y=e.clientY/H;tracking=true});
@@ -341,7 +464,7 @@ function fireUp(src){delete fireSrc[src];if(Object.keys(fireSrc).length===0)hold
 if(!DEBUG){
  addEventListener('keydown',e=>{const k=e.keyCode,c=e.key;
   if(FIRE_KC.indexOf(k)>=0||c==='Enter'||c===' '){e.preventDefault();if(!e.repeat)fireDown('k'+k)}
-  else if(scene==='menu'&&(k===37||k===39||c==='ArrowLeft'||c==='ArrowRight')){e.preventDefault();menuSel=(k===39||c==='ArrowRight')?1:0}
+  else if(scene==='menu'&&(k===37||k===39||c==='ArrowLeft'||c==='ArrowRight')){e.preventDefault();menuSel=Math.max(0,Math.min(2,menuSel+((k===39||c==='ArrowRight')?1:-1)))}
   else if(RELOAD_KC.indexOf(k)>=0||RELOAD_KEYS.indexOf(c)>=0){e.preventDefault();if(!e.repeat)reload()}
   else if(k===38||c==='ArrowUp'){e.preventDefault();if(!e.repeat){const n=performance.now();if(n-lastUp<800){lastUp=0;goHome()}else lastUp=n}}
   else if(HOME_KC.indexOf(k)>=0||c==='h'||c==='H'||c==='ContextMenu'){e.preventDefault();if(!e.repeat)goHome()}},true);
@@ -364,7 +487,8 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  ensureTargets();update(dt);
  spd+=(aimSpeed-spd)*Math.min(1,dt*10);aimSpeed*=Math.pow(.02,dt);
  const s=sc.getContext('2d');
- if(scene==='play'&&mode==='rails'&&R)drawRails(s,now);
+ if(scene==='play'&&mode==='sky'&&SK)drawSky(s,now);
+ else if(scene==='play'&&mode==='rails'&&R)drawRails(s,now);
  else{
  s.drawImage(bg,0,0);
  for(let i=0;i<3;i++){const cx=((now/1000*(2+i)+i*90)%(SW+50))-25,cy=14+i*13;
@@ -383,15 +507,15 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
   g.fillStyle='rgba(8,10,24,0.62)';g.fillRect(IX,IY,IW,IH);
   g.textAlign='center';g.textBaseline='middle';
   g.font='bold '+(H*.09)+'px monospace';txt('SPATIAL ARCADE',W/2,H*.17,'#ff9900');
-  const opts=[['DRONE DROP','SHOOT THE DELIVERY DRONES','FREE AIM  -  HOLD FOR FULL AUTO'],['WAREHOUSE RUN','ON-RAILS SHOOTER','COVER - DODGE - SAVE COURIERS']];
-  for(let i=0;i<2;i++){const px=W*(i?.53:.08),pw=W*.39,py=H*.29,ph=H*.32,sel=menuSel===i;
+  const opts=[['DRONE DROP','SHOOT THE DELIVERY DRONES','FREE AIM  -  HOLD FOR FULL AUTO'],['WAREHOUSE RUN','ON-RAILS SHOOTER','COVER - DODGE - SAVE COURIERS'],['SKY DELIVERY','DROP PARCELS, THEN WAR','DROP - DEFEND - REPEL THE UAPs']];
+  for(let i=0;i<3;i++){const px=W*(.035+i*.315),pw=W*.29,py=H*.29,ph=H*.32,sel=menuSel===i;
    g.fillStyle=sel?'rgba(255,153,0,.22)':'rgba(40,50,80,.45)';g.fillRect(px,py,pw,ph);
    g.strokeStyle=sel?'#ff9900':'#556';g.lineWidth=sel?8:3;g.strokeRect(px,py,pw,ph);
-   g.font='bold '+(H*.055)+'px monospace';txt(opts[i][0],px+pw/2,py+ph*.28,sel?'#ffe9b8':'#89a');
-   g.font='bold '+(H*.03)+'px monospace';txt(opts[i][1],px+pw/2,py+ph*.55,sel?'#ffd98a':'#789');
-   g.font='bold '+(H*.024)+'px monospace';txt(opts[i][2],px+pw/2,py+ph*.78,sel?'#9ad':'#678')}
+   g.font='bold '+(H*.043)+'px monospace';txt(opts[i][0],px+pw/2,py+ph*.28,sel?'#ffe9b8':'#89a');
+   g.font='bold '+(H*.024)+'px monospace';txt(opts[i][1],px+pw/2,py+ph*.55,sel?'#ffd98a':'#789');
+   g.font='bold '+(H*.019)+'px monospace';txt(opts[i][2],px+pw/2,py+ph*.78,sel?'#9ad':'#678')}
   g.font='bold '+(H*.04)+'px monospace';
-  txt(phone?'AIM LEFT OR RIGHT, THEN PULL THE TRIGGER':'CONNECT THE PHONE CONTROLLER',W/2,H*.70,'#ffe9b8');
+  txt(phone?'AIM AT A PANEL, THEN PULL THE TRIGGER':'CONNECT THE PHONE CONTROLLER',W/2,H*.70,'#ffe9b8');
   g.font='bold '+(H*.03)+'px monospace';
   txt('REMOTE: LEFT / RIGHT TO CHOOSE, OK TO START',W/2,H*.77,'#9ad');
   txt('TAP = SHOOT    HOLD = FULL AUTO    RELOAD = RELOAD / COVER    HOME = MENU',W/2,H*.83,'#9ad');
@@ -424,6 +548,7 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  const hx=IX+B,hy=IY+B*.6;
  txt('ROOM '+room+'  '+(phone?(tracking?'SCREEN LOCKED':'SEARCHING FOR SCREEN'):'WAITING FOR PHONE'),hx,hy,'#8f8');
  if(scene==='play'&&mode==='rails'&&R)railsHud(now,fs,hx,hy);
+ if(scene==='play'&&mode==='sky'&&SK)skyHud(now,fs,hx,hy);
  if(scene==='play'&&mode==='drone'){
   const acc=shots?Math.round(hits*100/shots):0;
   txt('HITS '+hits+'  SHOTS '+shots+'  ACC '+acc+'%  COMBO '+combo+'  BEST '+best+'  GOT AWAY '+escaped,hx,hy+fs*1.3,'#ffe9b8');
