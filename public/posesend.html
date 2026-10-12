@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hand Sender</title>
+<style>body{margin:0;background:#111;color:#eee;font:15px system-ui}#w{position:relative}video{width:100%;display:block;transform:scaleX(-1)}canvas{position:absolute;top:0;left:0;width:100%}
+#ui{padding:10px}button,input{font-size:17px;padding:10px 14px;margin:4px 4px 4px 0}input{width:90px;text-transform:uppercase}pre{white-space:pre-wrap;font-size:14px;background:#000;padding:8px}</style></head><body>
+<div id="w"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+<div id="ui">Room <input id="room" value="ABCD" maxlength="8"> <button id="go">START (front camera)</button>
+<pre id="o">Prop the phone still, screen facing you, 6-8 ft (2-2.5 m) away, upper body in view. Open the TV page /fb?room=ABCD on the Fire TV, then tap START. Keep the remote in your other hand.</pre></div>
+<script type="module">
+const $=id=>document.getElementById(id),v=$('v'),c=$('c'),g=c.getContext('2d'),o=$('o');
+let lm=null,run=false,ws=null,stream=null,sent=0,frames=0,t0=0,chosen=16,lastSend=0,wl=null;
+const log=t=>o.textContent=t;
+function connect(){const room=$('room').value.trim().toUpperCase()||'ABCD';
+ ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=phone');
+ ws.onclose=()=>{if(run)setTimeout(connect,1500)}}
+async function load(){log('Loading tracker (needs internet, ~10 MB)...');
+ const m=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+ const fs=await m.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+ const mk=d=>m.PoseLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task',delegate:d},runningMode:'VIDEO',numPoses:1});
+ try{lm=await mk('GPU')}catch(e){lm=await mk('CPU')}}
+function loop(){if(!run)return;
+ const r=lm.detectForVideo(v,performance.now());frames++;
+ g.clearRect(0,0,c.width,c.height);
+ const p=r.landmarks&&r.landmarks[0];let best=null;
+ if(p){const vis=i=>(p[i].visibility??1);
+  // keep the same hand unless it is lost; prefer right wrist
+  let pick=vis(chosen)>.5?chosen:(vis(16)>.5?16:(vis(15)>.5?15:-1));
+  if(pick>=0){chosen=pick;best={x:1-p[pick].x,y:p[pick].y,v:vis(pick)};
+   g.fillStyle='#0f0';g.beginPath();g.arc((1-p[pick].x)*c.width,p[pick].y*c.height,12,0,7);g.fill()}
+  g.strokeStyle='#0ff';g.lineWidth=3;g.beginPath();for(const [a,b] of [[11,13],[13,15],[12,14],[14,16],[11,12]]){g.moveTo((1-p[a].x)*c.width,p[a].y*c.height);g.lineTo((1-p[b].x)*c.width,p[b].y*c.height)}g.stroke()}
+ const now=performance.now();
+ if(ws&&ws.readyState===1&&(best||now-lastSend>250)){ws.send(JSON.stringify(best?{type:'pose',x:+best.x.toFixed(3),y:+best.y.toFixed(3),v:+best.v.toFixed(2)}:{type:'pose',v:0}));sent++;lastSend=now}
+ if(frames%15==0){const s=(now-t0)/1000;log(`sending hand to TV  ${(frames/s).toFixed(1)} fps  ${ws&&ws.readyState===1?'CONNECTED':'NOT CONNECTED'}  hand ${best?'SEEN':'NOT SEEN'}`)}
+ v.requestVideoFrameCallback?v.requestVideoFrameCallback(loop):requestAnimationFrame(loop)}
+$('go').onclick=async()=>{try{
+ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+ v.srcObject=stream;await v.play();c.width=v.videoWidth;c.height=v.videoHeight;
+ try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+ if(!lm)await load();run=true;frames=0;t0=performance.now();connect();loop();$('go').textContent='RUNNING';
+ }catch(e){log('ERROR: '+e.message)}};
+</script></body></html>
