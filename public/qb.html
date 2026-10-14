@@ -10,6 +10,7 @@ const FORCE=+qp.get('force')||1.3;         // arm speed needed to count as a thr
 const WIN=+qp.get('win')||1.5;             // seconds the receiver stays open
 const SACKT=3;                             // seconds after the window closes before the sack
 const NDR=+qp.get('drives')||4;            // possessions per game
+const OKTHROW=qp.has('okthrow'); // lets OK throw even while the camera is on (judges / fallback). Off by default so the arm has to do the work.
 const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8;
 const W=256,H=144,HZ=56,VPX=128;
 const c=document.getElementById('c'),cg=c.getContext('2d');
@@ -31,7 +32,7 @@ function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.
 const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
 // ---- state ----
 let scene='title',clock=0,score=0,drive=0,down=1,toGo=60,pl=null,bag=[],msg='',sub='',msgT=0,shake=0,flash=0,endT=0,cool=0;
-let hand={x:.5,y:.6},sm={x:.5,y:.6},samples=[],spd=0,lastHandAt=0,phoneUp=false,dbg=null;
+let hintT=0;let hand={x:.5,y:.6},sm={x:.5,y:.6},samples=[],spd=0,lastHandAt=0,phoneUp=false,dbg=null;
 const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-8),b:i%3}));
 const lights=Array.from({length:90},(_,i)=>({x:(i*37)%W,y:HZ-11+((i*13)%10),c:i%3}));
 // ---- network ----
@@ -58,6 +59,7 @@ const PLAYS=[
 function nextRoute(){if(!bag.length){bag=PLAYS.slice();for(let i=bag.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[bag[i],bag[j]]=[bag[j],bag[i]]}
   if(pl&&pl.route&&bag[bag.length-1]===pl.route){bag.unshift(bag.pop())}} // never the same receiver twice in a row
  return bag.pop()}
+const camLive=()=>performance.now()-lastHandAt<1500;
 const goal=()=>toGo+7; // yards from the QB to the goal line
 function startGame(){scene='play';score=0;drive=0;startDrive()}
 const TG=+qp.get('tg')||0; // testing: fixed starting distance
@@ -79,6 +81,8 @@ function gap(){if(pl.phase==='wait'||pl.phase==='hike'){const k=pl.wait-.5;retur
 function press(){
  if(scene==='title'){startGame();return}
  if(scene==='end'){if(endT>1.2)startGame();return}
+ // With the phone camera on, only a real arm throw counts. OK / trigger alone does nothing (unless ?okthrow).
+ if(performance.now()-lastHandAt<1500&&!OKTHROW){if(pl&&pl.phase!=='hike'&&pl.phase!=='ball'&&pl.phase!=='result')hintT=1.4;return}
  throwNow()}
 function throwNow(){if(scene!=='play'||!pl||cool>0)return;const ph=pl.phase;if(ph==='hike'||ph==='ball'||ph==='result')return;
  const h=handPx(),t=target();pl.from={x:h.x,y:h.y};cool=.8;
@@ -103,8 +107,9 @@ function resolve(){const o=pl.out;msgT=1.8;sub=o.why||'';
  pl.phase='result';pl.t=0}
 function update(dt){dt*=TS;clock+=dt;const now=performance.now();
  sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
- spd=Math.max(armSpeed(now),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;if(msgT>0)msgT-=dt;if(flash>0)flash-=dt*1.6;if(shake>0)shake-=dt*14;
+ spd=Math.max(armSpeed(now),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;if(msgT>0)msgT-=dt;if(hintT>0)hintT-=dt;if(flash>0)flash-=dt*1.6;if(shake>0)shake-=dt*14;
  if(scene==='end')endT+=dt;
+ if(camLive()&&spd>=FORCE&&cool<=0&&clock>3){if(scene==='title'){cool=.8;startGame();return}if(scene==='end'&&endT>1.2){cool=.8;startGame();return}}
  if(scene!=='play'||!pl)return;
  if(spd>=FORCE)throwNow();
  pl.t+=dt;
@@ -189,19 +194,22 @@ function draw(){
   else if(ph==='open'){if(Math.floor(clock*6)%2)txt(k==='pass'?'THROW NOW!':'KICK NOW!',W/2,44,16,'#ff5050');
    if(spd>=FORCE*.5&&spd<FORCE)txt('HARDER!',W/2,H-16,9,'#ffb060')}
   else if(ph==='closed'){if(k==='pass')txt('COVERED - THROW IT AWAY!  SACK IN '+Math.max(0,Math.ceil(SACKT-pl.t)),W/2,H-16,7,'#ff9a60');else txt('KICK NOW OR LOSE IT',W/2,H-16,7,'#ff9a60')}
+  const cl=camLive();
+  txt(cl?'ARM TRACKING ON - NO BUTTONS NEEDED':(DEBUG?'DEBUG: MOUSE':'NO CAMERA: OK BUTTON THROWS'),W/2,H-3,6,cl?'#7dff7d':'#ffb060');
+  if(hintT>0)txt('THROW WITH YOUR ARM!  OK ALONE DOES NOTHING',W/2,H*.58,8,'#ffb060');
   if(msgT>0){txt(msg,W/2,H*.4,15,/TOUCH|GOAL!|PUNT/.test(msg)?'#7dff7d':'#ff6a6a');if(sub)txt(sub,W/2,H*.4+14,7,'#fff')}
   // arm-speed meter (tuning aid): fill = how fast your hand is moving, line = speed needed to throw
   const mw=70,fr=clamp(spd/(FORCE*1.6),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);
   cg.fillStyle='#fff';cg.fillRect(6+mw/1.6,H-12,1,7);txt('ARM',6,H-13,6,'#cfd8ff','left');
-  if(!DEBUG&&performance.now()-lastHandAt>1500&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-3,7,'#ffb060')}
+  if(!DEBUG&&performance.now()-lastHandAt>1500&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-24,7,'#ffb060')}
  else if(scene==='title'){
   txt('QUARTERBACK',W/2,40,22,'#ffd860');
   txt('HAIL MARY OFFENSE. YOUR ARM IS THE ARM. THE PHONE WATCHES YOU.',W/2,60,6.5,'#fff');
   txt('WHEN THE CROSSHAIR TURNS RED, THROW HARD. LATE = INCOMPLETE. LATER = SACK.',W/2,71,6.5,'#fff');
   txt('4TH DOWN: A FIELD GOAL OR A PUNT. SAME ARM SWING.',W/2,82,6.5,'#fff');
-  txt('PRESS OK TO START',W/2,106,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
+  txt(camLive()?'THROW TO START':'PRESS OK TO START',W/2,106,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
   txt(DEBUG?'DEBUG: MOUSE = HAND (FLICK IT FAST TO THROW), CLICK = THROW':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
- else{txt('FINAL SCORE '+score,W/2,56,16,'#ffd860');txt(NDR+' DRIVES',W/2,76,9,'#fff');if(endT>1.2)txt('PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
+ else{txt('FINAL SCORE '+score,W/2,56,16,'#ffd860');txt(NDR+' DRIVES',W/2,76,9,'#fff');if(endT>1.2)txt(camLive()?'THROW TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
 // ---- input ----
 const FIRE_KC=[13,23,32,96,103,105];
 addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
