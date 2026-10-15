@@ -1,0 +1,85 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bat Sender</title>
+<style>body{margin:0;background:#111;color:#eee;font:15px system-ui}#w{position:relative;touch-action:manipulation}video{width:100%;display:block;transform:scaleX(-1)}canvas#c{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+#ui{padding:10px}button,input{font-size:17px;padding:10px 14px;margin:4px 4px 4px 0}input{width:90px;text-transform:uppercase}pre{white-space:pre-wrap;font-size:14px;background:#000;padding:8px}</style></head><body>
+<div id="w"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+<div id="ui">Room <input id="room" value="ABCD" maxlength="8"> <button id="go">START CAMERA</button> <button id="fs">FAST SHUTTER (try)</button>
+<pre id="o">Prop the phone still, screen facing you, 6-8 ft away, under or beside the TV. Turn the room lights ON. Open /fb?room=ABCD on the Fire TV. Tap START, then TAP THE ORANGE BAT on the phone screen so it learns the color. Hold the bat so it is not hidden by your body.</pre></div>
+<script>
+const $=id=>document.getElementById(id),v=$('v'),c=$('c'),g=c.getContext('2d'),o=$('o');
+const qp=new URLSearchParams(location.search);
+let run=false,ws=null,stream=null,frames=0,t0=0,lastSend=0,wl=null,fastOn=false,lastLog=0;
+// color target (hue in degrees, saturation 0-1, brightness 0-1). Defaults suit a bright orange plastic bat; tap the bat to re-learn.
+let H0=+qp.get('h')||22,HT=+qp.get('ht')||14,SMIN=+qp.get('smin')||.6,VMIN=+qp.get('vmin')||.4,picked=false;
+const SW=160;let SH=120,sc=document.createElement('canvas'),sg=null,mc=document.createElement('canvas'),mg=null,m=null,m2=null,seen=null,stack=null,lastData=null;
+const log=t=>o.textContent=t;let holdUntil=0;const say=(t,ms=6000)=>{log(t);holdUntil=performance.now()+ms};
+function setup(){SH=Math.round(SW*v.videoHeight/v.videoWidth)||120;sc.width=SW;sc.height=SH;sg=sc.getContext('2d',{willReadFrequently:true});mc.width=SW;mc.height=SH;mg=mc.getContext('2d');
+ m=new Uint8Array(SW*SH);m2=new Uint8Array(SW*SH);seen=new Uint8Array(SW*SH);stack=new Int32Array(SW*SH)}
+function connect(){const room=$('room').value.trim().toUpperCase()||'ABCD';
+ ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=phone');
+ ws.onclose=()=>{if(run)setTimeout(connect,1500)}}
+function hsv(r,gg,b){const mx=Math.max(r,gg,b),mn=Math.min(r,gg,b),dl=mx-mn;let h=0;if(dl){if(mx===r)h=60*((gg-b)/dl);else if(mx===gg)h=60*(2+(b-r)/dl);else h=60*(4+(r-gg)/dl);if(h<0)h+=360}return{h,s:mx?dl/mx:0,v:mx/255}}
+function threshold(d){const n=SW*SH,v255=VMIN*255;
+ for(let i=0,j=0;i<n;i++,j+=4){const r=d[j],gg=d[j+1],b=d[j+2];const mx=r>gg?(r>b?r:b):(gg>b?gg:b);
+  if(mx<v255){m[i]=0;continue}
+  const mn=r<gg?(r<b?r:b):(gg<b?gg:b),dl=mx-mn;if(dl<SMIN*mx){m[i]=0;continue}
+  let h;if(mx===r)h=60*((gg-b)/dl);else if(mx===gg)h=60*(2+(b-r)/dl);else h=60*(4+(r-gg)/dl);if(h<0)h+=360;
+  let dh=Math.abs(h-H0);if(dh>180)dh=360-dh;m[i]=dh<=HT?1:0}
+ const L=n-SW-1;for(let i=0;i<L;i++)m2[i]=m[i]|m[i+1]|m[i+SW]|m[i+SW+1];for(let i=L;i<n;i++)m2[i]=m[i]} // dilate 1px so a blurred or split bat stays one blob
+function blob(){seen.fill(0);let best=null;const w=SW,h=SH,n=w*h;
+ for(let s=0;s<n;s++){if(!m2[s]||seen[s])continue;let sp=0;stack[sp++]=s;seen[s]=1;let a=0,sx=0,sy=0;
+  while(sp){const p=stack[--sp],x=p%w,y=(p/w)|0;a++;sx+=x;sy+=y;
+   if(x>0&&m2[p-1]&&!seen[p-1]){seen[p-1]=1;stack[sp++]=p-1}if(x<w-1&&m2[p+1]&&!seen[p+1]){seen[p+1]=1;stack[sp++]=p+1}
+   if(y>0&&m2[p-w]&&!seen[p-w]){seen[p-w]=1;stack[sp++]=p-w}if(y<h-1&&m2[p+w]&&!seen[p+w]){seen[p+w]=1;stack[sp++]=p+w}}
+  if(!best||a>best.a)best={a,x:(sx/a+.5)/w,y:(sy/a+.5)/h}}
+ return best}
+// same speed measure the TV uses (camera-widths per second over ~70-170 ms) so the number here matches the game
+let samples=[],spd=0,peak=0,peakT=0;
+function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
+let fpsN=0,fpsT=0,fps=0;
+function loop(){if(!run)return;
+ sg.drawImage(v,0,0,SW,SH);lastData=sg.getImageData(0,0,SW,SH);threshold(lastData.data);
+ const bl=blob(),now=performance.now();frames++;fpsN++;if(now-fpsT>1000){fps=fpsN*1000/(now-fpsT);fpsN=0;fpsT=now}
+ const seenBat=bl&&bl.a>=14;
+ // overlay: the pixels the phone thinks are the bat, in cyan, then a crosshair on the center
+ g.clearRect(0,0,c.width,c.height);
+ const id=mg.createImageData(SW,SH),od=id.data;for(let i=0;i<SW*SH;i++)if(m2[i]){od[i*4]=0;od[i*4+1]=255;od[i*4+2]=255;od[i*4+3]=150}
+ mg.putImageData(id,0,0);g.save();g.translate(c.width,0);g.scale(-1,1);g.drawImage(mc,0,0,c.width,c.height);g.restore();
+ if(seenBat){const X=(1-bl.x)*c.width,Y=bl.y*c.height;g.strokeStyle='#0f0';g.lineWidth=3;g.beginPath();g.arc(X,Y,16,0,7);g.moveTo(X-26,Y);g.lineTo(X+26,Y);g.moveTo(X,Y-26);g.lineTo(X,Y+26);g.stroke();
+  samples.push({t:now,x:bl.x,y:bl.y});while(samples.length&&now-samples[0].t>600)samples.shift()}
+ spd=armSpeed(now);if(spd>=peak||now-peakT>3000){peak=spd;peakT=now}
+ if(ws&&ws.readyState===1&&(seenBat||now-lastSend>250)){ws.send(JSON.stringify(seenBat?{type:'pose',x:+(1-bl.x).toFixed(3),y:+bl.y.toFixed(3),v:1,bat:1,a:bl.a}:{type:'pose',v:0}));lastSend=now}
+ if(now-lastLog>400&&now>holdUntil){lastLog=now;log(`${picked?'color learned':'default orange (TAP THE BAT to learn its color)'}\n${ws&&ws.readyState===1?'CONNECTED':'NOT CONNECTED'}   ${fps.toFixed(0)} fps   bat ${seenBat?'SEEN ('+bl.a+' px)':'NOT SEEN'}\nswing speed ${spd.toFixed(1)}   best in last 3 s ${peak.toFixed(1)}`)}
+ v.requestVideoFrameCallback?v.requestVideoFrameCallback(loop):requestAnimationFrame(loop)}
+// tap the bat on the phone screen to learn its exact color under your lighting
+$('w').addEventListener('click',e=>{if(!run||!lastData)return;const r=$('w').getBoundingClientRect(),fx=1-(e.clientX-r.left)/r.width,fy=(e.clientY-r.top)/r.height;
+ const cx=Math.round(fx*SW),cy=Math.round(fy*SH),hs=[],ss=[],vs=[];
+ for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const x=cx+dx,y=cy+dy;if(x<0||y<0||x>=SW||y>=SH)continue;const j=(y*SW+x)*4,d=lastData.data,q=hsv(d[j],d[j+1],d[j+2]);hs.push(q.h);ss.push(q.s);vs.push(q.v)}
+ if(!hs.length)return;hs.sort((a,b)=>a-b);const med=a=>a[a.length>>1],mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
+ const h=med(hs),s=mean(ss),vv=mean(vs);
+ if(s<.5){say('That spot is too pale ('+s.toFixed(2)+') - it could be skin or a wall. Tap the brightest orange part of the bat. If the bat looks washed out, turn on more room light.');return}
+ H0=h;SMIN=Math.max(.5,s-.28);VMIN=Math.max(.2,vv-.35);picked=true;say('Learned color: hue '+h.toFixed(0)+', saturation '+s.toFixed(2)+', brightness '+vv.toFixed(2)+'. Cyan = what it thinks is the bat.')});
+// try to shorten the shutter so a fast swing blurs less. Many phones will refuse; that is fine.
+$('fs').onclick=async()=>{try{if(!stream){say('Tap START CAMERA first.');return}const t=stream.getVideoTracks()[0],cap=t.getCapabilities?t.getCapabilities():{};
+ if(fastOn){await t.applyConstraints({advanced:[{exposureMode:'continuous'}]});fastOn=false;$('fs').textContent='FAST SHUTTER (try)';say('Back to automatic exposure.');return}
+ if(!cap.exposureTime){say('This phone/browser does not allow shutter control. Use more room light instead (it makes the shutter shorter on its own).');return}
+ const e=cap.exposureTime,val=e.min+(e.max-e.min)*.04;await t.applyConstraints({advanced:[{exposureMode:'manual',exposureTime:val}]});fastOn=true;$('fs').textContent='AUTO EXPOSURE';
+ say('Fast shutter set. If the picture goes dark, add light and tap the bat again to re-learn its color.')}catch(err){say('Fast shutter failed: '+err.message)}};
+window.addEventListener('error',e=>log('PAGE ERROR: '+(e.message||e)));window.addEventListener('unhandledrejection',e=>log('ERROR: '+((e.reason&&e.reason.message)||e.reason)));
+const withTimeout=(p,ms,msg)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error(msg)),ms))]);
+$('go').onclick=async()=>{try{
+ log('1/3 Button works. Asking for the camera...');
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('This browser blocks the camera on this page. Open it in Chrome using the https:// address.');
+ if(stream)stream.getTracks().forEach(t=>t.stop());
+ const camMsg='Camera did not start in 10 s. Close every other tab or app using the camera, reload this page, then tap START again.';
+ const face=qp.get('cam')==='back'?'environment':'user';
+ try{stream=await withTimeout(navigator.mediaDevices.getUserMedia({video:{facingMode:face,width:{ideal:640},height:{ideal:480},frameRate:{ideal:60,min:24}},audio:false}),10000,camMsg)}
+ catch(e){if(/permission|denied|NotAllowed/i.test(e.name+e.message))throw new Error('Camera permission is blocked. Tap the lock icon by the address, set Camera to Allow, reload.');log('Retrying with basic camera settings...');stream=await withTimeout(navigator.mediaDevices.getUserMedia({video:true,audio:false}),10000,camMsg)}
+ v.srcObject=stream;await v.play();c.width=v.videoWidth;c.height=v.videoHeight;setup();
+ try{wl=await navigator.wakeLock.request('screen')}catch(e){}
+ const st=stream.getVideoTracks()[0].getSettings();
+ log('2/3 Camera on ('+v.videoWidth+'x'+v.videoHeight+' at '+(st.frameRate||'?')+' fps requested). Connecting to the TV relay...');
+ run=true;frames=0;t0=performance.now();fpsT=t0;connect();loop();$('go').textContent='RUNNING (tap to restart)';
+ }catch(e){log('ERROR: '+e.message)}};
+window.__bat=()=>({H0,HT,SMIN,VMIN,picked,fps,spd,peak,wsOpen:!!(ws&&ws.readyState===1)});
+</script></body></html>
