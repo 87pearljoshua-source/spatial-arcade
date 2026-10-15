@@ -3,8 +3,9 @@
 canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
 <canvas id="c" width="256" height="144"></canvas>
 <script>
-// FASTBALL - first-person batting demo. Hand position comes from the phone camera (posesend.html), OK / trigger swings.
+// FASTBALL - first-person batting demo. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate.
 const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
+let FORCE=+qp.get('force')||1.2;const OKSWING=qp.has('okswing'),NOCAL=qp.has('nocal')||qp.has('force')||DEBUG; // arm speed (camera-widths/s) that counts as a swing; ?okswing lets OK swing too
 const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8; // hand gain (tune if your reach feels too small/large)
 const W=256,H=144,HZ=52,VPX=128,NP=5,R=20; // R = bat zone radius in scene pixels
 const c=document.getElementById('c'),cg=c.getContext('2d');
@@ -27,15 +28,15 @@ function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.
 const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
 // scene pixel -> screen pixel (test hook only)
 const toScreen=(sx,sy)=>{let best=null,bd=1e9;for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0)continue;const d=Math.abs(s%W-sx)+Math.abs(((s/W)|0)-sy);if(d<bd){bd=d;best=i;if(d===0)break}}return{x:best%W+.5,y:((best/W)|0)+.5}};
-let hand={x:.5,y:.6,t:0},sm={x:.5,y:.6},dbg=null;
-let scene='title',pitchN=0,score=0,hits=0,P=null,gap=0,swing=0,res='',resT=0,endT=0,phoneUp=false,clock=0;
+let samples=[],spd=0,cool=0;let hand={x:.5,y:.6,t:0},sm={x:.5,y:.6},dbg=null;
+let cal={n:0,cp:0,peaks:[],t:0,done:NOCAL,last:0,hold:0},scene='title',pitchN=0,score=0,hits=0,P=null,gap=0,swing=0,res='',resT=0,endT=0,phoneUp=false,clock=0;
 const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-6),b:i%3}));
 // ---- network ----
 let ws=null;
 function conn(){try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
   if(m.type==='peer_joined')phoneUp=true;else if(m.type==='peer_left')phoneUp=false;
-  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){hand.x=m.x;hand.y=m.y;hand.t=performance.now()}}
+  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift()}}
   else if(m.type==='fire_down')press()};
  ws.onclose=()=>{phoneUp=false;setTimeout(conn,1500)};ws.onerror=()=>{try{ws.close()}catch(e){}}}catch(e){setTimeout(conn,3000)}}
 conn();
@@ -45,12 +46,22 @@ function ballPos(p){if(p.state==='hit')return p.hp;const z=Math.min(p.z,1.12);re
 function startGame(){scene='play';pitchN=0;score=0;hits=0;P=null;gap=.6;res=''}
 function newPitch(){P={t:0,state:'wind',z:0,tx:W*(.3+Math.random()*.4),ty:H*(.5+Math.random()*.2),swung:false,trail:[],res:''}}
 function setRes(t){res=t;resT=1.1;if(P)P.res=t}
-function press(){
- if(scene==='title'){startGame();return}
- if(scene==='end'){if(endT>1.2)startGame();return}
+const camLive=()=>performance.now()-hand.t<1500;
+function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;
+ let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;
+ return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
+function startOrCal(){if(camLive()&&!cal.done){scene='cal';cal.n=0;cal.cp=0;cal.peaks=[];cal.t=0;cal.last=0;cal.hold=0}else startGame()}
+function calFinish(){const q=cal.peaks.slice().sort((x,y)=>x-y),a=q[q.length>>1];FORCE=clamp(.6*a,.8,6);cal.done=true;cal.t=-1.4}
+function press(src){
+ if(scene==='title'){startOrCal();return}
+ if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
+ if(scene==='end'){if(endT>1.2)startOrCal();return}
+ if(src!=='arm'&&camLive()&&!OKSWING)return; // camera on: only a real arm swing counts
  if(!P||P.swung||P.state==='hit'||P.state==='wind')return;
  swing=.28;P.swung=true;
- const b=ballPos(P),h=handPx(),d=Math.hypot(b.x-h.x,b.y-h.y);
+ const b=ballPos(P),h=handPx();let d=Math.hypot(b.x-h.x,b.y-h.y);
+ if(src==='arm'){const nw=performance.now(); // a real swing sweeps: count the closest point of the last 250 ms of hand path
+  for(const q of samples){if(nw-q.t>250)continue;const px=W*clamp(.5+(q.x-.5)*GX,.02,.98),py=H*clamp(.5+(q.y-.6)*GY,.08,.95);d=Math.min(d,Math.hypot(b.x-px,b.y-py))}}
  if(P.z<.86){setRes('TOO EARLY');return}
  if(P.z>1.02){setRes('TOO LATE');return}
  if(d>R){setRes('MISSED');return}
@@ -58,7 +69,16 @@ function press(){
  P.state='hit';P.t=0;P.hp={x:b.x,y:b.y,r:b.r,vx:(Math.random()-.5)*60,vy:-70};
  hits++;score+=perfect?300:100;setRes(perfect?'PERFECT!':'HIT!')}
 function finishPitch(){if(!P.swung&&!P.res)setRes('STRIKE');pitchN++;P=null;if(pitchN>=NP){scene='end';endT=0}else gap=.8}
-function update(dt){clock+=dt;
+function update(dt){clock+=dt;const nw=performance.now();spd=Math.max(armSpeed(nw),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;
+ if(camLive()&&spd>=FORCE&&cool<=0&&(scene==='title'||scene==='end'||(scene==='play'&&P&&!P.swung&&P.state!=='wind'))){cool=.6;press('arm')}
+
+ if(scene==='cal'){cal.t+=dt;
+  if(cal.done){if(cal.t>=0)startGame()}
+  else if(cal.hold>0){cal.hold-=dt;cal.cp=0}
+  else if(cal.t>1.2&&camLive()){const sp=Math.min(spd,10);if(sp>cal.cp)cal.cp=sp;
+   if(cal.cp>=.7&&sp<.35*cal.cp){const best=cal.peaks.length?Math.max(...cal.peaks):0;cal.hold=.9;
+    if(cal.cp>=.35*best){cal.peaks.push(cal.cp);cal.last=cal.cp;cal.n++;if(cal.n>=3)calFinish()}
+    cal.cp=0}}}
  sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
  if(swing>0)swing-=dt;if(resT>0)resT-=dt;if(scene==='end')endT+=dt;
  if(scene!=='play')return;
@@ -126,16 +146,24 @@ function draw(){
   txt('PITCH '+Math.min(pitchN+1,NP)+'/'+NP,6,12,9,'#fff','left');txt('SCORE '+score,W-6,12,9,'#fff','right');
   if(resT>0)txt(res,W/2,H*.42,16,/HIT|PERF/.test(res)?'#7dff7d':'#ff6a6a');
   if(!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
-  else txt('MOVE HAND TO THE BALL  -  PRESS OK WHEN IT SLOWS',W/2,H-12,7,'#d8d8f0')}
+  else txt(camLive()?'MOVE THE BAT TO THE BALL, SWING WHEN IT SLOWS':'MOVE HAND TO THE BALL  -  PRESS OK WHEN IT SLOWS',W/2,H-12,7,'#d8d8f0');
+  {const mw=70,fr=clamp(spd/(FORCE*1.6),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.fillRect(6+mw/1.6,H-12,1,7);txt('ARM',6,H-13,6,'#cfd8ff','left')}}
  else if(scene==='title'){
   txt('FASTBALL',W/2,44,26,'#ffd860');
-  txt('YOUR HAND IS THE BAT. THE PHONE CAMERA WATCHES YOU.',W/2,66,7,'#fff');
-  txt('MOVE YOUR HAND TO THE BALL, PRESS OK WHEN IT SLOWS DOWN',W/2,78,7,'#fff');
-  txt('PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
+  txt('YOUR BAT (OR HAND) IS THE BAT. THE PHONE CAMERA WATCHES YOU.',W/2,66,7,'#fff');
+  txt(camLive()?'SWING WHEN THE BALL SLOWS DOWN. A QUICK WARM-UP COMES FIRST.':'MOVE YOUR HAND TO THE BALL, PRESS OK WHEN IT SLOWS DOWN',W/2,78,7,'#fff');
+  txt(camLive()?'SWING YOUR ARM TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
   txt(DEBUG?'DEBUG: MOUSE = HAND, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
+ else if(scene==='cal'){
+  txt('WARM UP',W/2,34,18,'#ffd860');
+  if(cal.done)txt('READY - FIRST PITCH COMING',W/2,70,9,'#7dff7d');
+  else{txt('SWING YOUR BAT 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
+   txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
+   if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
+   if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
  else{
   txt('FINAL SCORE '+score,W/2,56,16,'#ffd860');txt('HITS '+hits+' / '+NP,W/2,78,11,'#fff');
-  if(endT>1.2)txt('PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
+  if(endT>1.2)txt(camLive()?'SWING YOUR ARM TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
 // ---- input ----
 const FIRE_KC=[13,23,32,96,103,105];
 addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
@@ -146,5 +174,5 @@ let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.
 let last=performance.now();
 function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
-window.__disp=toScreen;window.__fb=()=>({scene,pitchN,score,hits,res,swing,hand:handPx(),phoneUp,P:P&&{state:P.state,z:P.z,ball:ballPos(P)}});
+window.__disp=toScreen;window.__fb=()=>({FORCE,cal:{n:cal.n,done:cal.done,peaks:cal.peaks},scene,pitchN,score,hits,res,swing,hand:handPx(),phoneUp,P:P&&{state:P.state,z:P.z,ball:ballPos(P)}});
 </script></body></html>
