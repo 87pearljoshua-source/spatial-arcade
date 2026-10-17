@@ -2,6 +2,7 @@
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
 canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
 <canvas id="c" width="256" height="144"></canvas>
+<script src="/qr.js"></script>
 <script>
 // FASTBALL - first-person batting demo. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate.
 const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
@@ -172,7 +173,7 @@ if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r
 let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
 // ---- loop ----
 let last=performance.now();
-function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();requestAnimationFrame(frame)}
+function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
 window.__disp=toScreen;window.__fb=()=>({FORCE,cal:{n:cal.n,done:cal.done,peaks:cal.peaks},scene,pitchN,score,hits,res,swing,hand:handPx(),phoneUp,P:P&&{state:P.state,z:P.z,ball:ballPos(P)}});
 </script></body></html>
