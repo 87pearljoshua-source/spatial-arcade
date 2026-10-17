@@ -8,11 +8,11 @@ const server = http.createServer((req, res) => {
     return res.end(fs.readFileSync(path.join(__dirname, 'public', 'tv.html')));
   }
   const p = req.url.split('?')[0];
-  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/qb': 'qb.html', '/bat': 'batsend.html' }; // small test pages
+  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
   if (pages[p]) {
     try {
       const f = fs.readFileSync(path.join(__dirname, 'public', pages[p]));
-      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.writeHead(200, { 'Content-Type': p.endsWith('.js') ? 'application/javascript' : 'text/html' });
       return res.end(f);
     } catch (e) { res.writeHead(404); return res.end('test page not uploaded'); }
   }
