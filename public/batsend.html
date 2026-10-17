@@ -7,7 +7,7 @@
 <pre id="o">Prop the phone still, screen facing you, 6-8 ft away, under or beside the TV. Turn the room lights ON. Open /fb?room=ABCD on the Fire TV. Tap START, then TAP THE ORANGE BAT on the phone screen so it learns the color. Hold the bat so it is not hidden by your body.</pre></div>
 <script>
 const $=id=>document.getElementById(id),v=$('v'),c=$('c'),g=c.getContext('2d'),o=$('o');
-const qp=new URLSearchParams(location.search);
+const qp=new URLSearchParams(location.search);{const rq=(qp.get('room')||'').toUpperCase().slice(0,8);if(rq)$('room').value=rq}
 let run=false,ws=null,stream=null,frames=0,t0=0,lastSend=0,wl=null,fastOn=false,lastLog=0;
 // color target (hue in degrees, saturation 0-1, brightness 0-1). Defaults suit a bright orange plastic bat; tap the bat to re-learn.
 let H0=+qp.get('h')||22,HT=+qp.get('ht')||14,SMIN=+qp.get('smin')||.6,VMIN=+qp.get('vmin')||.4,picked=false;
