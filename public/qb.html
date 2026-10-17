@@ -2,6 +2,7 @@
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
 canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
 <canvas id="c" width="256" height="144"></canvas>
+<script src="/qr.js"></script>
 <script>
 // QUARTERBACK - first-person hail-mary passing demo. Hand motion comes from the phone camera (posesend.html). OK / trigger = throw (full force).
 const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
@@ -217,7 +218,7 @@ if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r
  addEventListener('mousemove',m);addEventListener('mousedown',e=>{m(e);press()})}
 let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
 let last=performance.now();
-function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();requestAnimationFrame(frame)}
+function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/posesend.html?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
 window.__qb=()=>({scene,drive,down,toGo,score,spd,msg,pl:pl&&{kind:pl.kind,phase:pl.phase,t:pl.t,wait:pl.wait,route:pl.route&&pl.route.n,out:pl.out&&pl.out.type}});
 </script></body></html>
