@@ -9,6 +9,7 @@
 const $=id=>document.getElementById(id),v=$('v'),c=$('c'),g=c.getContext('2d'),o=$('o');
 let lm=null,run=false,ws=null,stream=null,sent=0,frames=0,t0=0,chosen=16,lastSend=0,wl=null;
 const log=t=>o.textContent=t;
+{const rq=(new URLSearchParams(location.search).get('room')||'').toUpperCase().slice(0,8);if(rq)$('room').value=rq}
 function connect(){const room=$('room').value.trim().toUpperCase()||'ABCD';
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=phone');
  ws.onclose=()=>{if(run)setTimeout(connect,1500)}}
