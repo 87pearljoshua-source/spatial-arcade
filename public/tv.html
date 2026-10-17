@@ -1,12 +1,14 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Spatial Arcade</title><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style></head>
-<body><canvas id="c"></canvas><script>
+<body><canvas id="c"></canvas><script src="/qr.js"></script><script>
 const c=document.getElementById('c'),g=c.getContext('2d');
 let W,H,B,IX,IY,IW,IH;
 function rs(){W=c.width=innerWidth;H=c.height=innerHeight;B=Math.round(H*.035);IX=IY=B+Math.round(H*.015);IW=W-2*IX;IH=H-2*IY}
 rs();addEventListener('resize',rs);
 const qp=new URLSearchParams(location.search);
 const room=(qp.get('room')||'ABCD').toUpperCase();
+// Optional: add &phone=<address of your phone tracker app> to the TV address and the menu shows a QR code that opens it already pointed at this room and relay.
+const PHONE_URL=qp.get('phone')||'',PHONE_PAIR=PHONE_URL?PHONE_URL+(PHONE_URL.indexOf('?')>=0?'&':'?')+'room='+room+'&relay='+encodeURIComponent((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'):'';
 // The phone is the ONLY controller. Mouse/keyboard/remote input is off unless the page is opened with ?debug=1
 // (handy for judges or testing the game without a phone; it does not exercise the camera tracking).
 const DEBUG=qp.has('debug');
@@ -323,8 +325,11 @@ function railsHud(now,fs,hx,hy){const r=R;
 // Phase 1: you are the delivery drone. Aim at a doormat and drop the parcel (it takes a moment to fall, so lead the house).
 // Phase 2: unidentified aerial phenomena (UAPs) arrive. The drone is armed and you fight them off with lasers. Shoot their orbs too.
 // Add &fast=1 to the TV address to start the invasion after 22 seconds (or 4 deliveries) instead of 2 minutes (or 14 deliveries).
-const SKY_LIVES=5, SKY_T=qp.has('fast')?22:120, SKY_QUOTA=qp.has('fast')?4:14, SKY_FALL=.9, SKY_SCROLL=8;
-function initSky(){SK={phase:'deliver',t:0,tw:0,score:0,delivered:0,missed:0,lives:SKY_LIVES,houses:[],pk:[],en:[],orbs:[],beam:null,wave:0,wt:0,spawnT:.4,hurt:0,invuln:0,endAt:0,scroll:0}}
+const SKY_ROAD=52,SKY_LIVES=5, SKY_T=qp.has('fast')?22:120, SKY_QUOTA=qp.has('fast')?4:14, SKY_FALL=.9, SKY_SCROLL=8;
+function initSky(){SK={phase:'deliver',t:0,tw:0,score:0,delivered:0,missed:0,lives:SKY_LIVES,houses:[],pk:[],en:[],orbs:[],beam:null,wave:0,wt:0,spawnT:.4,hurt:0,invuln:0,endAt:0,scroll:0,cyc:0};for(let j=1;j<=3;j++)skyRow(SK,j*SKY_ROAD-53,false)}
+// A block of houses sits between two roads. Roads repeat every SKY_ROAD px and scroll with the houses, so each row lines up with its block.
+function skyRow(r,yc,deco){const slots=[0,1,2,3,4,5,6,7].sort(()=>Math.random()-.5).slice(0,3+(Math.random()<.5?1:0));
+ for(const k of slots)r.houses.push({x:20+k*31+Math.round((Math.random()-.5)*4),y:yc,delivered:!!deco,deco:!!deco,ci:Math.floor(Math.random()*5),v:Math.random()})}
 function skyLock(){const r=SK;if(!r)return [];
  if(r.phase==='deliver')return r.houses.filter(h=>!h.delivered&&h.y>-8&&h.y<138).map(h=>({x:nxOf(h.x),y:nyOf(h.y+11),r:8*IW/SW/H}));
  if(r.phase==='war'){const L=r.orbs.map(o=>({x:nxOf(o.x),y:nyOf(o.y),r:7*IW/SW/H}));
@@ -346,11 +351,7 @@ function skyLand(p){const r=SK;let hs=null,bd=1e9;
  else{combo=0;popup(p.x,p.y-8,'MISSED','#f95')}}
 function updateSky(dt,now){const r=SK;
  r.t+=dt;r.hurt=Math.max(0,r.hurt-dt);r.scroll+=SKY_SCROLL*dt;
- if(r.phase==='deliver'){r.spawnT-=dt;
-  const vis=r.houses.filter(h=>!h.delivered&&h.y>-14&&h.y<150).length;
-  if(r.spawnT<=0&&vis<4){const x=26+Math.random()*204;
-   if(r.houses.every(h=>h.y>24||Math.abs(h.x-x)>28)){r.houses.push({x,y:-14,delivered:false,col:['#b5483a','#3a6fb5','#d9a23a','#4a9a5a','#8a5ab5'][Math.floor(Math.random()*5)]});r.spawnT=.9+Math.random()*.9}else r.spawnT=.15}
-  else if(r.spawnT<=0)r.spawnT=.3}
+ {const cyc=Math.floor(r.scroll/SKY_ROAD);if(cyc>r.cyc){r.cyc=cyc;skyRow(r,(r.scroll%SKY_ROAD)-53,r.phase!=='deliver')}}
  for(const h of r.houses)h.y+=SKY_SCROLL*dt;
  for(let i=r.houses.length-1;i>=0;i--){const h=r.houses[i];if(h.y>160){if(!h.delivered&&r.phase==='deliver'){r.missed++;combo=0}r.houses.splice(i,1)}}
  for(let i=r.pk.length-1;i>=0;i--){const p=r.pk[i];p.t+=dt;if(p.t>=SKY_FALL){r.pk.splice(i,1);skyLand(p)}}
@@ -398,17 +399,36 @@ function drawHero(s,x,y,armed,now){
  R(-4,-3,8,6,'#232f3e');R(-4,0,8,1,'#ff9900');R(-1,-2,2,1,'#37475a');
  if(armed){R(-6,-8,1,5,'#ff3b6b');R(5,-8,1,5,'#ff3b6b');R(-6,-9,1,1,'#ffd0dc');R(5,-9,1,1,'#ffd0dc')}
  else{R(-3,3,6,4,'#c8934a');R(-3,5,6,1,'#a87634');R(-1,3,2,4,'#e8c98a')}}
+const _shM={};
+function shd(hex,f){const k=hex+f;if(_shM[k])return _shM[k];const n=parseInt(hex.slice(1),16),t=f<0?0:255,q=Math.abs(f),m=v=>Math.round(v+(t-v)*q);return _shM[k]='rgb('+m(n>>16)+','+m((n>>8)&255)+','+m(n&255)+')'}
+const SKY_ROOFS=['#b5483a','#3a6fb5','#d9a23a','#4a9a5a','#8a5ab5'],SKY_WALLS=['#f1e6cf','#e8eef2','#f4e2c0','#e6efe0','#efe2ee'];
+// one house, seen from above-front: lot, roof with ridge + shingles + chimney, wall with windows and door, fence, tree, and the doormat target
+function drawHouse(s,h,now,live){const x=Math.round(h.x),y=Math.round(h.y),R=(dx,dy,w,hh,c)=>{s.fillStyle=c;s.fillRect(x+dx,y+dy,w,hh)};
+ const ci=h.ci||0,roof=SKY_ROOFS[ci],wall=SKY_WALLS[ci],lt=shd(roof,.3),dk=shd(roof,-.28),ink=shd(roof,-.55);
+ R(-14,-15,28,32,'#417f4c');R(-14,-15,28,1,'#2f6038');R(-14,16,28,1,'#2f6038');R(-14,-15,1,32,'#2f6038');R(13,-15,1,32,'#2f6038'); // lot
+ R(-11,-1,22,1,'rgba(0,0,0,.35)'); // roof shadow on the lawn
+ R(-11,0,22,9,wall);R(-11,8,22,1,shd(wall,-.28));R(-11,0,22,2,'rgba(0,0,0,.3)'); // wall + eave shadow
+ R(-9,2,5,4,'#fff');R(-8,3,3,2,'#7fc3e6');R(-7,3,1,2,'#fff');R(-9,6,5,1,shd(wall,-.35)); // windows
+ R(4,2,5,4,'#fff');R(5,3,3,2,'#7fc3e6');R(6,3,1,2,'#fff');R(4,6,5,1,shd(wall,-.35));
+ R(-3,1,6,1,'#fff');R(-3,2,1,7,'#fff');R(2,2,1,7,'#fff');R(-2,2,4,7,'#6b4226');R(-1,3,2,2,'#8a5a36');R(1,5,1,1,'#f0d060'); // door
+ R(-12,-13,24,12,dk);R(-12,-13,24,6,lt);R(-12,-7,24,6,roof);R(-12,-7,24,1,shd(roof,.55)); // roof: lit slope, shaded slope, ridge
+ for(let k=0;k<6;k++)if(k!==3)R(-12,-12+k*2,24,1,'rgba(0,0,0,.12)');
+ R(-12,-13,24,1,ink);R(-12,-13,1,12,ink);R(11,-13,1,12,ink);R(-12,-2,24,1,ink);
+ const cx=((h.v*7)%1>.5?1:-1)*6-2;R(cx,-12,4,6,'#8a4a3a');R(cx,-12,4,1,'#2b2020');R(cx,-11,1,4,'#b0644e'); // chimney
+ R(-14,15,8,1,'#ece4d2');R(6,15,8,1,'#ece4d2');for(const px of [-14,-10,-6,6,10,13])R(px,14,1,3,'#fff'); // fence, open at the path
+ const tx=h.v<.5?-10:10;if(h.v>.25){R(tx-3,16,8,1,'rgba(0,0,0,.3)');R(tx-4,9,9,7,'#245a2e');R(tx-3,8,7,8,'#2f7a3a');R(tx-2,8,3,3,'#4fa858')} // yard tree
+ if(h.deco){R(-3,9,6,6,'#cfc3a0')}
+ else{R(-5,9,10,5,'#f4ecd8');
+  if(h.delivered){R(-3,9,6,5,'#c8934a');R(-1,9,2,5,'#e8c98a');R(-3,9,6,1,'#a87634')}
+  else{R(-3,10,6,3,'#ff9900');if(live&&Math.floor(now/260)%2){R(-7,7,1,9,'#fff');R(6,7,1,9,'#fff');R(-7,7,14,1,'#fff');R(-7,15,14,1,'#fff')}}}}
 function drawSky(s,now){const r=SK,warn=r.phase==='warn',dark=warn?Math.min(.5,r.tw/3.4*.5):(r.phase==='deliver'?0:.5);
  s.fillStyle='#2f5d3a';s.fillRect(0,0,SW,SH);
  s.fillStyle='#36703f';for(let i=0;i<44;i++)s.fillRect((i*53)%SW,Math.round((i*97+r.scroll)%SH),3,1);
- for(let i=0;i<4;i++){const y=Math.round(((i*52+r.scroll)%208)-32);s.fillStyle='#3b3f4a';s.fillRect(0,y,SW,12);s.fillStyle='#c9b13a';for(let x=0;x<SW;x+=24)s.fillRect(x+4,y+5,10,2)}
- for(const h of r.houses){const x=Math.round(h.x),y=Math.round(h.y);
-  s.fillStyle=h.col;s.fillRect(x-9,y-7,18,14);s.fillStyle='rgba(0,0,0,.28)';s.fillRect(x-9,y+4,18,3);s.fillRect(x+1,y-7,8,2);
-  s.fillStyle='#555d6e';s.fillRect(x+4,y-6,3,3);
-  s.fillStyle='#f4ecd8';s.fillRect(x-5,y+9,10,5);
-  if(h.delivered){s.fillStyle='#c8934a';s.fillRect(x-3,y+9,6,5);s.fillStyle='#e8c98a';s.fillRect(x-1,y+9,2,5)}
-  else{s.fillStyle='#ff9900';s.fillRect(x-3,y+10,6,3);
-   if(r.phase==='deliver'&&Math.floor(now/260)%2){s.fillStyle='#fff';s.fillRect(x-7,y+7,1,9);s.fillRect(x+6,y+7,1,9);s.fillRect(x-7,y+7,14,1);s.fillRect(x-7,y+15,14,1)}}}
+ const off=r.scroll%SKY_ROAD;
+ for(let j=0;j<6;j++){const y=Math.round(off+j*SKY_ROAD-84);if(y<-16||y>SH+4)continue; // road with sidewalks, same spacing the house rows use
+  s.fillStyle='#b8b3a3';s.fillRect(0,y-3,SW,3);s.fillRect(0,y+12,SW,3);s.fillStyle='#8d8878';s.fillRect(0,y-1,SW,1);s.fillRect(0,y+12,SW,1);
+  s.fillStyle='#3b3f4a';s.fillRect(0,y,SW,12);s.fillStyle='#c9b13a';for(let x=0;x<SW;x+=24)s.fillRect(x+4,y+5,10,2)}
+ for(const h of r.houses)drawHouse(s,h,now,r.phase==='deliver');
  for(const p of r.pk){const pr=Math.min(1,p.t/SKY_FALL),yy=Math.round(p.y-(1-pr)*26),sz=Math.round(5+(1-pr)*3);
   s.fillStyle='rgba(0,0,0,.35)';s.fillRect(Math.round(p.x)-3,Math.round(p.y)-1,7,3);
   s.fillStyle='#fff';s.fillRect(Math.round(p.x)-3,Math.round(p.y),7,1);s.fillRect(Math.round(p.x),Math.round(p.y)-3,1,7);
@@ -423,6 +443,7 @@ function drawSky(s,now){const r=SK,warn=r.phase==='warn',dark=warn?Math.min(.5,r
  drawHero(s,128,130,r.phase!=='deliver'&&r.phase!=='warn',now)}
 function skyHud(now,fs,hx,hy){const r=SK;
  const acc=shots?Math.round(hits*100/shots):0;
+ g.fillStyle='rgba(8,12,10,.58)';g.fillRect(IX,hy+fs*1.05,IW,fs*1.55);g.fillRect(IX,H-IY-B*.4-fs*1.3,IW,fs*1.55+B*.1); // dark strips so the text reads over houses
  g.font='bold '+fs+'px monospace';g.textBaseline='top';g.textAlign='left';
  txt('SCORE '+r.score+'  DELIVERED '+r.delivered+'  ACC '+acc+'%  COMBO '+combo+'  BEST '+best+(r.phase==='war'?'  WAVE '+r.wave+'/3':''),hx,hy+fs*1.3,'#ffe9b8');
  const hs=H*.03;for(let i=0;i<SKY_LIVES;i++){g.fillStyle=i<r.lives?'#ff3b3b':'#401818';g.fillRect(W-IX-B-(i+1)*hs*1.5,hy,hs,hs)}
@@ -547,6 +568,7 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
  const fs=H*.034;g.font='bold '+fs+'px monospace';g.textBaseline='top';g.textAlign='left';
  const hx=IX+B,hy=IY+B*.6;
  txt('ROOM '+room+'  '+(phone?(tracking?'SCREEN LOCKED':'SEARCHING FOR SCREEN'):'WAITING FOR PHONE'),hx,hy,'#8f8');
+ window.pairQR&&pairQR(PHONE_PAIR,scene==='menu'&&!phone&&!!PHONE_PAIR);
  if(scene==='play'&&mode==='rails'&&R)railsHud(now,fs,hx,hy);
  if(scene==='play'&&mode==='sky'&&SK)skyHud(now,fs,hx,hy);
  if(scene==='play'&&mode==='drone'){
