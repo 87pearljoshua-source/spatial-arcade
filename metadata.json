@@ -1,0 +1,8 @@
+{
+  "name": "Spatial Finger Tracker",
+  "description": "A mobile web prototype for real-time camera-based spatial pointing and fingertip tracking using on-device computer vision.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
