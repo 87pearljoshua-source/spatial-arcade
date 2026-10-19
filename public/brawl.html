@@ -36,7 +36,7 @@ function conn(){try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws:
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
   if(m.type==='peer_joined')phoneUp=true;else if(m.type==='peer_left')phoneUp=false;
   else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift()}}
-  else if(m.type==='fire_down')press()};
+  else if(m.type==='shape')onShape(m);else if(m.type==='fire_down')press()};
  ws.onclose=()=>{phoneUp=false;setTimeout(conn,1500)};ws.onerror=()=>{try{ws.close()}catch(e){}}}catch(e){setTimeout(conn,3000)}}
 conn();
 // ---- game ----
@@ -50,6 +50,41 @@ function calFinish(){const q=cal.peaks.slice().sort((x,y)=>x-y),a=q[q.length>>1]
 
 // ---- brawler ----
 let cal={n:0,cp:0,peaks:[],t:0,done:NOCAL,last:0,hold:0},scene='title',hp=100,score=0,wave=0,kills=0,combo=0,bestCombo=0,comboT=0,E=[],queue=[],spawnT=0,banner='',bannerT=0,swing=0,sw=null,swCd=0,flash=0,hurtF=0,shake=0,pops=[],endT=0,won=false,phoneUp=false,clock=0,waveGap=0;
+/*RANK*/
+// Turn the phone's shape numbers into a ranked list of guesses. These are hand-tuned rules, not a trained model.
+const tz=(x,a,b,c,d)=>x<=a||x>=d?0:x<b?(x-a)/(b-a):x<=c?1:(d-x)/(d-c);
+function rankWeapons(f){
+ const p=f.prof,avg=(a,b)=>{let s=0;for(let i=a;i<=b;i++)s+=p[i];return s/(b-a+1)};
+ const med=[...p.slice(0,5)].sort((a,b)=>a-b)[2],taper=avg(5,7)/Math.max(.2,avg(0,2)),head=Math.max(p[6],p[7])/Math.max(.2,med),ar=f.ar,dev=f.dev;
+ const multi=f.blobs>=2;
+ const curv=Math.max(dev/.04,(f.tort-1.05)/.25),strt=curv<.75?1:.4,nohead=head<1.3?1:.3,bent=f.tort>1.3?.3:1;
+ let s={
+  bat:tz(ar,2.5,5,11,18)*tz(taper,1.25,1.8,4,8)*bent,
+  plank:tz(ar,3.5,6,24,50)*tz(taper,.6,.8,1.3,1.6)*tz(f.fill,.55,.8,1.1,1.3)*strt*nohead*bent,
+  club:tz(ar,7,12,45,90)*tz(head,1.25,1.5,6,10)*bent,
+  whip:tz(Math.max(ar,f.arc),14,22,400,900)*(.35+.65*Math.min(Math.max(curv,0),1))*(head<1.35?1:.4),
+  nunchucks:multi?.9:(tz(ar,3,5,13,20)*Math.min(dev/.1,1)*.7)};
+ if(multi){for(const k of['bat','plank','club','whip'])s[k]*=.25}
+ const sum=Object.values(s).reduce((a,b)=>a+b,0)+1e-6;
+ const out=Object.keys(s).map(k=>({w:k,p:Math.max(.02,s[k]/Math.max(sum,.4)),raw:s[k]})).sort((a,b)=>b.raw-a.raw||b.p-a.p);
+ return out}
+/*ENDRANK*/
+
+// ---- weapons ----
+const WP={fists:{n:'FISTS',cd:.2,d:-1,half:-2,zmin:.62,hint:'FAST  -  SHORT REACH'},bat:{n:'BASEBALL BAT',cd:.3,d:0,half:0,zmin:.5,hint:'BALANCED'},plank:{n:'2X4 LUMBER',cd:.46,d:1,half:2,zmin:.5,hint:'SLOW  -  HEAVY HITS'},club:{n:'GOLF CLUB',cd:.38,d:0,half:12,zmin:.5,hint:'WIDE SWEEP'},whip:{n:'WHIP',cd:.32,d:0,half:8,zmin:.28,hint:'LONG REACH'},nunchucks:{n:'NUNCHUCKS',cd:.16,d:-1,half:4,zmin:.5,hint:'VERY FAST COMBOS'}};
+const ALLW=['fists','bat','plank','club','whip','nunchucks'];
+let weapon='fists',menuSel=0,menu=[],scanT=0,scanMsg='',scanSent=0,gridAll=false,punch=0;
+function goWeapon(){scene='weapon';menu=[{id:'fists'},{id:'scan'}];menuSel=0;gridAll=false}
+function startScan(){scene='scan';scanT=0;scanMsg='';scanSent=0}
+function onShape(m){if(scene!=='scan')return;if(m.none){scanMsg='NOTHING SEEN. TAP THE OBJECT ON THE PHONE SCREEN, THEN TRY AGAIN.';scanT=Math.max(scanT,8);return}
+ let r;try{r=rankWeapons(m)}catch(e){scanMsg='SCAN FAILED';return}
+ menu=r.slice(0,3).map(x=>({id:x.w}));menu.push({id:'other'});menuSel=0;gridAll=false;scene='pick'}
+function chooseWeapon(id){weapon=id;startOrCal()}
+function menuOK(){
+ if(scene==='weapon'){if(menu[menuSel].id==='fists')chooseWeapon('fists');else startScan();return}
+ if(scene==='scan'){goWeapon();return}
+ if(scene==='pick'){const it=menu[menuSel];if(it.id==='other'){gridAll=true;menu=ALLW.map(id=>({id}));menuSel=0}else chooseWeapon(it.id)}}
+function nav(dx,dy){if(scene!=='weapon'&&scene!=='pick')return;const n=menu.length;menuSel=(menuSel+dx+(gridAll?dy*3:dy)+n*3)%n}
 const WAVES=[['t','t','t','t'],['t','r','t','r','t','r'],['b','t','r','t','b','r','t'],['t','r','t','r','f']];
 const TY={t:{hp:2,spd:.17,dmg:8,col:'#a23030',col2:'#6a1a1a',h:1,w:.42,pts:100},r:{hp:1,spd:.3,dmg:5,col:'#2f7fb5',col2:'#1a4a70',h:.85,w:.36,pts:100},b:{hp:4,spd:.11,dmg:15,col:'#5a3a8a',col2:'#33205a',h:1.12,w:.62,pts:250},f:{hp:14,spd:.08,dmg:22,col:'#c8a020',col2:'#7a5a10',h:1.28,w:.72,pts:1500}};
 const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-6),b:i%3}));
@@ -59,22 +94,23 @@ function startWave(){queue=WAVES[wave].slice();spawnT=.9;banner='WAVE '+(wave+1)
 function startGame(){scene='play';hp=100;score=0;wave=0;kills=0;combo=0;bestCombo=0;E=[];pops=[];sw=null;swCd=0;won=false;startWave()}
 function spawn(k){const T=TY[k];E.push({k,T,lane:[-1,0,1][(Math.random()*3)|0],off:(Math.random()-.5)*16,z:.12,hp:T.hp,max:T.hp,state:'walk',t:0,fl:0,ph:Math.random()*6})}
 function press(src){
- if(scene==='title'){startOrCal();return}
+ if(scene==='title'){goWeapon();return}
+ if(scene==='weapon'||scene==='scan'||scene==='pick'){if(src!=='arm')menuOK();return}
  if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
  if(scene==='end'){if(endT>1.5)startOrCal();return}
  if(src!=='arm'&&camLive())return; // camera on: only a real bat swing counts
  if(sw||swCd>0)return;
- swing=.28;swCd=.3;sw={pend:.12,pk:Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9)),src}}
+ swing=.28;swCd=WP[weapon].cd;punch^=1;sw={pend:.12,pk:Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9)),src}}
 function pop(x,y,t,c){pops.push({x,y,t:0,s:t,c:c||'#fff'})}
 function hit(e,dmg){e.hp-=dmg;e.fl=.16;e.z=Math.max(.3,e.z-.11*dmg);combo++;comboT=1.8;if(combo>bestCombo)bestCombo=combo;score+=10*combo;shake=.12;
  if(e.hp<=0){e.state='dead';e.t=0;kills++;score+=Math.round(e.T.pts*(1+combo*.1));pop(ex(e),ey(e)-eh(e)*.7,'KO!','#ffd860')}
  else{e.state='stun';e.t=0;pop(ex(e),ey(e)-eh(e)*.8,dmg>2?'SMASH':'HIT','#fff')}}
 // A swing sweeps the bat's whole path: every enemy close enough to that path takes the hit. Swing speed sets the damage.
 function resolveSwing(){
- const pw=clamp(sw.pk/(FORCE*2.2),.1,1),dmg=pw>.8?3:pw>.45?2:1,h=handPx();let x0=h.x,x1=h.x;
+ const pw=clamp(sw.pk/(FORCE*2.2),.1,1),dmg=clamp((pw>.8?3:pw>.45?2:1)+WP[weapon].d,1,4),h=handPx();let x0=h.x,x1=h.x;
  if(sw.src==='arm'){const nw=performance.now();for(const q of samples){if(nw-q.t>350)continue;const px=W*clamp(.5+(q.x-.5)*GX,.02,.98);x0=Math.min(x0,px);x1=Math.max(x1,px)}}
  let n=0;
- for(const e of E){if(e.state==='dead'||e.z<.45)continue;const half=e.T.w*eh(e)*.5+16;
+ for(const e of E){if(e.state==='dead'||e.z<WP[weapon].zmin)continue;const half=e.T.w*eh(e)*.5+16+WP[weapon].half;
   if(pw>.92||(ex(e)>=x0-half&&ex(e)<=x1+half)){hit(e,pw>.92?Math.max(dmg,3):dmg);n++}}
  if(pw>.92&&n)flash=.15;
  if(!n){pop(h.x,h.y-8,'WHIFF','#9aa')}
@@ -93,6 +129,8 @@ if(scene==='cal'){cal.t+=dt;
  sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
  if(swing>0)swing-=dt;if(swCd>0)swCd-=dt;if(flash>0)flash-=dt;if(hurtF>0)hurtF-=dt;if(shake>0)shake-=dt;if(scene==='end')endT+=dt;
  for(const p of pops)p.t+=dt;pops=pops.filter(p=>p.t<.8);
+ if(scene==='scan'){scanT+=dt;if(scanT>=scanSent){ws&&ws.readyState===1&&ws.send(JSON.stringify({type:'scan'}));scanSent+=4}
+  if(scanT>13){scanMsg=phoneUp?'NO SCAN RECEIVED. OPEN THE BAT PAGE ON THE PHONE AND START THE CAMERA.':'CONNECT THE PHONE FIRST.';if(scanT>16)goWeapon()}}
  if(scene!=='play')return;
  if(sw){sw.pk=Math.max(sw.pk,spd);sw.pend-=dt;if(sw.pend<=0)resolveSwing()}
  if(comboT>0){comboT-=dt;if(comboT<=0)combo=0}
@@ -151,20 +189,64 @@ function drawFig(e){
 function arm(x0,y0,x1,y1,col){const dx=x1-x0,dy=y1-y0,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;poly([[x0+nx*9,y0+ny*9],[x1+nx*4.5,y1+ny*4.5],[x1-nx*4.5,y1-ny*4.5],[x0-nx*9,y0-ny*9]],col)}
 function fist(x,y){g.fillStyle='#d9a066';g.fillRect(x-5,y-4,10,8);g.fillStyle='#a8743c';g.fillRect(x-5,y+1,10,3);g.fillStyle='#8a5a2c';g.fillRect(x-1,y-4,1,6);g.fillRect(x+2,y-4,1,6)}
 
-function drawBat(){const h=handPx(),sp=swing>0?(1-swing/.28):0;
- const a=swing>0?-2.3+sp*2.3:-2.3,L=48,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=h.x+ux*L,ty=h.y+uy*L;
- poly([[h.x+nx*2,h.y+ny*2],[tx+nx*5,ty+ny*5],[tx-nx*5,ty-ny*5],[h.x-nx*2,h.y-ny*2]],'#e8701c');
- poly([[h.x+ux*(L-14)+nx*3,h.y+uy*(L-14)+ny*3],[tx+nx*5,ty+ny*5],[tx-nx*5,ty-ny*5],[h.x+ux*(L-14)-nx*3,h.y+uy*(L-14)-ny*3]],'#ff9a3c');
- const f2={x:h.x+ux*9,y:h.y+uy*9};
+const pl=(c,pts,col)=>{c.fillStyle=col;c.beginPath();pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));c.closePath();c.fill()};
+function stick(c,hx,hy,a,L,w0,w1,col){const ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=hx+ux*L,ty=hy+uy*L;pl(c,[[hx+nx*w0,hy+ny*w0],[tx+nx*w1,ty+ny*w1],[tx-nx*w1,ty-ny*w1],[hx-nx*w0,hy-ny*w0]],col)}
+// draw one weapon with its handle at (hx,hy) pointing along angle a, length L; t = swing progress 0..1 (whip and nunchucks lag behind the hand)
+function drawW(c,k,hx,hy,a,L,t){const ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,s=L/48,at=(u,o)=>[hx+ux*L*u+nx*o,hy+uy*L*u+ny*o];
+ if(k==='bat'){stick(c,hx,hy,a,L,1.6*s,5*s,'#c08a48');const q=at(.55,0);stick(c,q[0],q[1],a,L*.45,4*s,5*s,'#e0a860');stick(c,hx,hy,a,L*.22,1.8*s,1.8*s,'#2a2a2a');const e=at(1,0);c.fillStyle='#b07a3c';c.beginPath();c.arc(e[0],e[1],5*s,0,7);c.fill()}
+ else if(k==='plank'){stick(c,hx,hy,a,L,3.6*s,3.6*s,'#c99a5a');stick(c,hx,hy,a,L,1.2*s,1.2*s,'#e0b878');for(let u=.15;u<1;u+=.22){const q=at(u,0);stick(c,q[0],q[1],a,L*.06,3.6*s,3.6*s,'#a87a3e')}const e=at(1,0);pl(c,[[e[0]+nx*3.6*s,e[1]+ny*3.6*s],[e[0]-nx*3.6*s,e[1]-ny*3.6*s],[e[0]-nx*3.6*s+ux*2,e[1]-ny*3.6*s+uy*2],[e[0]+nx*3.6*s+ux*2,e[1]+ny*3.6*s+uy*2]],'#8a5a28')}
+ else if(k==='club'){stick(c,hx,hy,a,L,1*s,.9*s,'#c8c8d4');stick(c,hx,hy,a,L*.28,1.5*s,1.5*s,'#202028');const e=at(1,0);pl(c,[[e[0]+nx*3*s,e[1]+ny*3*s],[e[0]+ux*8*s+nx*4*s,e[1]+uy*8*s+ny*4*s],[e[0]+ux*8*s-nx*5*s,e[1]+uy*8*s-ny*5*s],[e[0]-nx*5*s,e[1]-ny*5*s]],'#2a2a32');pl(c,[[e[0]+ux*2*s+nx*3*s,e[1]+uy*2*s+ny*3*s],[e[0]+ux*8*s+nx*4*s,e[1]+uy*8*s+ny*4*s],[e[0]+ux*8*s+nx*2*s,e[1]+uy*8*s+ny*2*s]],'#6a6a78')}
+ else if(k==='whip'){stick(c,hx,hy,a,L*.5,2*s,2.4*s,'#3a2410');const b=at(.5,0);c.strokeStyle='#6a4020';c.lineWidth=Math.max(1,2*s);c.beginPath();c.moveTo(b[0],b[1]);
+  const bend=-1.5*Math.sin(Math.min(t,1)*Math.PI)+(t<=0?.7:0);for(let i=1;i<=12;i++){const u=i/12,ang=a+bend*u*u,x=b[0]+Math.cos(ang)*L*1.3*u+nx*Math.sin(u*9+clock*8)*3*s*u,y=b[1]+Math.sin(ang)*L*1.3*u+ny*Math.sin(u*9+clock*8)*3*s*u;c.lineTo(x,y)}c.stroke();
+  if(t>.55&&t<.85){const q=at(1.8,0);c.fillStyle='#fff';c.fillRect(q[0]-2,q[1]-2,4,4)}}
+ else if(k==='nunchucks'){const l1=L*.5;stick(c,hx,hy,a,l1,2.2*s,2.2*s,'#5a3418');stick(c,hx,hy,a,l1*.35,2.4*s,2.4*s,'#222');const j=at(.5,0),a2=a+1.5*(1-Math.min(t*1.6,1))+.5*Math.sin(Math.min(t,1)*Math.PI)*-1.6+(t<=0?.5:0);
+  c.strokeStyle='#b0b0b8';c.lineWidth=Math.max(1,1.2*s);c.beginPath();c.moveTo(j[0],j[1]);c.lineTo(j[0]+Math.cos(a+(a2-a)*.5)*5*s,j[1]+Math.sin(a+(a2-a)*.5)*5*s);c.stroke();
+  const j2=[j[0]+Math.cos(a+(a2-a)*.5)*5*s,j[1]+Math.sin(a+(a2-a)*.5)*5*s];stick(c,j2[0],j2[1],a2,l1,2.2*s,2.2*s,'#5a3418');stick(c,j2[0],j2[1],a2,l1*.35,2.4*s,2.4*s,'#222')}}
+function glove(c,x,y,r,col){c.fillStyle='#2a0a0a';c.beginPath();c.arc(x,y,r+1,0,7);c.fill();c.fillStyle=col;c.beginPath();c.arc(x,y,r,0,7);c.fill();c.fillStyle='rgba(255,255,255,.35)';c.beginPath();c.arc(x-r*.3,y-r*.35,r*.35,0,7);c.fill();c.fillStyle='#e8e8f0';c.fillRect(x-r*.7,y+r*.7,r*1.4,r*.5);c.fillStyle='#fff';c.fillRect(x-r*.1,y-r*.9,r*.2,r*.4)}
+function drawFists(h,sp){const f=swing>0?Math.sin(sp*Math.PI):0,L={x:h.x-20,y:h.y+8},R={x:h.x+20,y:h.y+8};
+ const act=punch?R:L,idle=punch?L:R;
+ arm(W*.38,H+14,L.x,L.y+8,'#2e3a66');arm(W*.72,H+14,R.x,R.y+8,'#3b4a7a');
+ glove(g,idle.x,idle.y,10,'#c83030');
+ glove(g,act.x+(act===L?6:-6)*f,act.y-30*f,10+9*f,'#e03a3a')}
+function drawBat(){const h=handPx(),sp=swing>0?(1-swing/.28):0,k=weapon;
+ if(k==='fists'){drawFists(h,sp);return}
+ const a=swing>0?-2.3+sp*2.3:-2.3,L=k==='whip'?42:k==='nunchucks'?46:k==='club'?54:k==='plank'?50:48;
+ drawW(g,k,h.x,h.y,a,L,sp);
+ const ux=Math.cos(a),uy=Math.sin(a),f2={x:h.x+ux*9,y:h.y+uy*9};
  arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
  fist(f2.x,f2.y);fist(h.x,h.y);
  if(swing>0){g.strokeStyle='rgba(255,200,120,.6)';g.lineWidth=2;g.beginPath();g.arc(h.x,h.y,L*.9,a-.9,a);g.stroke()}}
+// menu cards are drawn straight onto the sharp text layer (no fisheye) so they line up with their labels
+function card(x,y,w,h,sel){cg.fillStyle=sel?'rgba(255,154,60,.28)':'rgba(255,255,255,.07)';cg.fillRect(x,y,w,h);cg.strokeStyle=sel?'#ff9a3c':'rgba(255,255,255,.3)';cg.lineWidth=sel?2:1;cg.strokeRect(x+.5,y+.5,w-1,h-1)}
+function icon(k,cx,cy,sz){if(k==='fists'){glove(cg,cx-sz*.3,cy+2,sz*.22,'#c83030');glove(cg,cx+sz*.3,cy-2,sz*.22,'#e03a3a');return}
+ if(k==='other'){txt('?',cx,cy+sz*.25,sz*.8,'#cfd8ff');return}
+ drawW(cg,k,cx-sz*.3,cy+sz*.45,-1.0,sz*(k==='whip'?.62:.9),.0)}
+function menuText(){
+ if(scene==='weapon'){txt('CHOOSE YOUR WEAPON',W/2,24,13,'#ffd860');
+  menu.forEach((it,i)=>{const x=22+i*114,y=40,w=106,h=70;card(x,y,w,h,i===menuSel);
+   if(it.id==='fists'){icon('fists',x+w/2,y+28,40);txt('FISTS',x+w/2,y+58,9,'#fff');txt('DEFAULT - NO OBJECT',x+w/2,y+67,5,'#cfd8ff')}
+   else{icon('bat',x+w/2,y+28,40);txt('SCAN AN OBJECT',x+w/2,y+58,9,'#fff');txt('HOLD IT UP TO THE PHONE',x+w/2,y+67,5,'#cfd8ff')}});
+  txt('LEFT / RIGHT TO CHOOSE  -  OK TO CONFIRM',W/2,128,7,'#d8d8f0');return}
+ if(scene==='scan'){txt('SCAN YOUR WEAPON',W/2,30,14,'#ffd860');
+  txt('HOLD THE OBJECT UP IN CLEAR VIEW OF THE PHONE',W/2,58,8,'#fff');txt('KEEP IT STILL FOR 3 SECONDS',W/2,70,8,'#fff');
+  txt('IF IT DOES NOT LIGHT UP CYAN, TAP IT ON THE PHONE SCREEN',W/2,84,7,'#8fd0ff');
+  const dots='.'.repeat(1+((clock*3)|0)%3);txt(scanMsg?scanMsg:('LOOKING'+dots),W/2,104,scanMsg?7:10,scanMsg?'#ffb060':'#7dff7d');
+  txt(phoneUp?'PHONE CONNECTED':'PHONE NOT CONNECTED',W/2,120,7,phoneUp?'#7dff7d':'#ff9a60');txt('PRESS OK TO GO BACK',W/2,132,6,'#d8d8f0');return}
+ if(scene==='pick'){const n=menu.length;
+  if(!gridAll){txt('WHAT IS IT?',W/2,22,13,'#ffd860');const cw=56,gap=5,x0=(W-(cw*n+gap*(n-1)))/2,lab=['BEST GUESS','2ND GUESS','3RD GUESS','NONE OF THESE'];
+   menu.forEach((it,i)=>{const x=x0+i*(cw+gap),y=36,h=78;card(x,y,cw,h,i===menuSel);icon(it.id,x+cw/2,y+30,38);
+    txt(it.id==='other'?'NONE OF':WP[it.id].n.split(' ')[0],x+cw/2,y+62,it.id==='other'?7:8,'#fff');txt(it.id==='other'?'THESE':(WP[it.id].n.split(' ')[1]||''),x+cw/2,y+71,7,'#fff');
+    txt(i<3?lab[i]:'',x+cw/2,y+h+9,5,'#8fd0ff')});
+   txt('THESE ARE GUESSES FROM THE SHAPE. LEFT / RIGHT, THEN OK.',W/2,132,6,'#d8d8f0')}
+  else{txt('PICK YOUR WEAPON',W/2,20,13,'#ffd860');
+   menu.forEach((it,i)=>{const cw=74,x=(W-(cw*3+8))/2+(i%3)*(cw+4),y=28+((i/3)|0)*50,h=46;card(x,y,cw,h,i===menuSel);icon(it.id,x+cw/2,y+17,28);txt(WP[it.id].n,x+cw/2,y+h-9,6,'#fff');txt(WP[it.id].hint,x+cw/2,y+h-2,4,'#cfd8ff')});
+   txt('ARROWS TO MOVE  -  OK TO CONFIRM',W/2,132,6,'#d8d8f0')}}}
 function draw(){
  g.save();if(shake>0)g.translate((Math.random()-.5)*5*shake/.35,(Math.random()-.5)*4*shake/.35);
  bg();
  if(scene==='play'){[...E].sort((p,q)=>p.z-q.z).forEach(drawFig)}
  g.restore();
- if(scene!=='title')drawBat();
+ if(scene==='play'||scene==='cal'||scene==='end')drawBat();
  if(hurtF>0){g.fillStyle='rgba(220,20,20,'+(hurtF/.3*.45)+')';g.fillRect(0,0,W,H)}
  if(flash>0){g.fillStyle='rgba(255,255,255,'+(flash/.15*.6)+')';g.fillRect(0,0,W,H)}
  if(scene!=='play'){g.fillStyle=scene==='title'?'rgba(0,0,0,.55)':'rgba(0,0,0,.6)';g.fillRect(0,0,W,H)}
@@ -184,10 +266,11 @@ function draw(){
   txt(camLive()?'SWING SIDE TO SIDE TO CLEAR THE ALLEY. HARDER SWING = MORE DAMAGE.':'PRESS OK TO SWING AT THE ENEMY IN FRONT OF YOU',W/2,78,7,'#fff');
   txt(camLive()?'SWING TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
   txt(DEBUG?'DEBUG: MOUSE = BAT, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
+ else if(scene==='weapon'||scene==='scan'||scene==='pick')menuText();
  else if(scene==='cal'){
   txt('WARM UP',W/2,34,18,'#ffd860');
   if(cal.done)txt('READY - HERE THEY COME',W/2,70,9,'#7dff7d');
-  else{txt('SWING YOUR BAT 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
+  else{txt('SWING 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
    txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
    if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
    if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
@@ -196,6 +279,7 @@ function draw(){
   txt('SCORE '+score,W/2,70,12,'#ffd860');txt('KOS '+kills+'   BEST COMBO '+bestCombo,W/2,88,9,'#fff');
   if(endT>1.5)txt(camLive()?'SWING TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,112,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
 // ---- input ----
+addEventListener('keydown',e=>{const k=e.keyCode;if(k===37||k===21)nav(-1,0);else if(k===39||k===22)nav(1,0);else if(k===38||k===19)nav(0,-1);else if(k===40||k===20)nav(0,1)});
 const FIRE_KC=[13,23,32,96,103,105];
 addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
 if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H);hand.t=0};
@@ -205,5 +289,5 @@ let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.
 let last=performance.now();
 function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
-window.__disp=toScreen;window.__fb=()=>({FORCE,cal:{n:cal.n,done:cal.done},scene,hp,score,wave,kills,combo,won,phoneUp,E:E.map(e=>({k:e.k,z:e.z,state:e.state,hp:e.hp,x:ex(e)}))});
+window.__disp=toScreen;window.__fb=()=>({weapon,menu:menu.map(m=>m.id),menuSel,scanMsg,FORCE,cal:{n:cal.n,done:cal.done},scene,hp,score,wave,kills,combo,won,phoneUp,E:E.map(e=>({k:e.k,z:e.z,state:e.state,hp:e.hp,x:ex(e)}))});
 </script></body></html>
