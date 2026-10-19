@@ -1,0 +1,209 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bat Alley</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
+canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
+<canvas id="c" width="256" height="144"></canvas>
+<script src="/qr.js"></script>
+<script>
+// BAT ALLEY - first-person street brawler. The phone camera follows your bat; swings sweep left/right and knock enemies back. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate.
+const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
+let FORCE=+qp.get('force')||1.2;const OKSWING=qp.has('okswing'),NOCAL=qp.has('nocal')||qp.has('force')||DEBUG; // arm speed (camera-widths/s) that counts as a swing; ?okswing lets OK swing too
+const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8; // hand gain (tune if your reach feels too small/large)
+const W=256,H=144,HZ=52,VPX=128,NP=5;
+const c=document.getElementById('c'),cg=c.getContext('2d');
+const bufc=document.createElement('canvas');bufc.width=256;bufc.height=144;
+const g=bufc.getContext('2d',{willReadFrequently:true});g.imageSmoothingEnabled=false; // scene is drawn here, then bent + posterized onto the screen canvas
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+// ---- fisheye + PS1-style color (precomputed once) ----
+const FK=.5,MAP=new Int32Array(W*H),VG=new Uint16Array(W*H),BAY=[-4,0,-3,1,2,-2,3,-1,-3,1,-4,0,4,-1,2,-2];
+for(let y=0;y<H;y++)for(let x=0;x<W;x++){const px=(x+.5)/W*2-1,py=(y+.5)/H*2-1,r2=px*px+py*py,f=(1+FK*r2)/(1+FK);
+ const sx=Math.floor((px*f+1)/2*W),sy=Math.floor((py*f+1)/2*H),i=y*W+x;
+ MAP[i]=(sx<0||sx>=W||sy<0||sy>=H)?-1:sy*W+sx;VG[i]=Math.max(40,Math.round(256*(1-.42*(r2/2)*(r2/2)*2)))}
+function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.buffer),od=cg.createImageData(W,H),out=new Uint32Array(od.data.buffer);
+ for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0){out[i]=0xFF000000;continue}
+  const p=src[s],v=VG[i],d=BAY[(i&3)|(((i>>8)&3)<<2)];
+  let r=((p&255)*v>>8)+d,gg=(((p>>8)&255)*v>>8)+d,b=(((p>>16)&255)*v>>8)+d;
+  r=r<0?0:r>255?255:r;gg=gg<0?0:gg>255?255:gg;b=b<0?0:b>255?255:b;r&=0xF8;gg&=0xF8;b&=0xF8;r|=r>>5;gg|=gg>>5;b|=b>>5;
+  out[i]=0xFF000000|(b<<16)|(gg<<8)|r}
+ cg.putImageData(od,0,0)}
+// screen pixel -> scene pixel (so a mouse lines up with what you see)
+const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
+// scene pixel -> screen pixel (test hook only)
+const toScreen=(sx,sy)=>{let best=null,bd=1e9;for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0)continue;const d=Math.abs(s%W-sx)+Math.abs(((s/W)|0)-sy);if(d<bd){bd=d;best=i;if(d===0)break}}return{x:best%W+.5,y:((best/W)|0)+.5}};
+let samples=[],spd=0,cool=0;let hand={x:.5,y:.6,t:0},sm={x:.5,y:.6},dbg=null;
+// ---- network ----
+let ws=null;
+function conn(){try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
+  if(m.type==='peer_joined')phoneUp=true;else if(m.type==='peer_left')phoneUp=false;
+  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift()}}
+  else if(m.type==='fire_down')press()};
+ ws.onclose=()=>{phoneUp=false;setTimeout(conn,1500)};ws.onerror=()=>{try{ws.close()}catch(e){}}}catch(e){setTimeout(conn,3000)}}
+conn();
+// ---- game ----
+const handPx=()=>dbg&&performance.now()-hand.t>1500?dbg:{x:W*clamp(.5+(sm.x-.5)*GX,.02,.98),y:H*clamp(.5+(sm.y-.6)*GY,.08,.95)};
+const camLive=()=>performance.now()-hand.t<1500;
+function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;
+ let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;
+ return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
+function startOrCal(){if(camLive()&&!cal.done){scene='cal';cal.n=0;cal.cp=0;cal.peaks=[];cal.t=0;cal.last=0;cal.hold=0}else startGame()}
+function calFinish(){const q=cal.peaks.slice().sort((x,y)=>x-y),a=q[q.length>>1];FORCE=clamp(.6*a,.8,6);cal.done=true;cal.t=-1.4}
+
+// ---- brawler ----
+let cal={n:0,cp:0,peaks:[],t:0,done:NOCAL,last:0,hold:0},scene='title',hp=100,score=0,wave=0,kills=0,combo=0,bestCombo=0,comboT=0,E=[],queue=[],spawnT=0,banner='',bannerT=0,swing=0,sw=null,swCd=0,flash=0,hurtF=0,shake=0,pops=[],endT=0,won=false,phoneUp=false,clock=0,waveGap=0;
+const WAVES=[['t','t','t','t'],['t','r','t','r','t','r'],['b','t','r','t','b','r','t'],['t','r','t','r','f']];
+const TY={t:{hp:2,spd:.17,dmg:8,col:'#a23030',col2:'#6a1a1a',h:1,w:.42,pts:100},r:{hp:1,spd:.3,dmg:5,col:'#2f7fb5',col2:'#1a4a70',h:.85,w:.36,pts:100},b:{hp:4,spd:.11,dmg:15,col:'#5a3a8a',col2:'#33205a',h:1.12,w:.62,pts:250},f:{hp:14,spd:.08,dmg:22,col:'#c8a020',col2:'#7a5a10',h:1.28,w:.72,pts:1500}};
+const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-6),b:i%3}));
+const BLD=Array.from({length:22},(_,i)=>({x:i*12-6,w:12+(i*7)%9,h:18+((i*37)%26)}));
+const ex=e=>VPX+e.lane*(105*Math.pow(e.z,1.1))+e.off*e.z, ey=e=>HZ+(H-HZ+10)*Math.pow(e.z,1.5), eh=e=>110*Math.pow(e.z,1.15)*e.T.h;
+function startWave(){queue=WAVES[wave].slice();spawnT=.9;banner='WAVE '+(wave+1)+(wave===WAVES.length-1?'  -  BOSS':'');bannerT=2}
+function startGame(){scene='play';hp=100;score=0;wave=0;kills=0;combo=0;bestCombo=0;E=[];pops=[];sw=null;swCd=0;won=false;startWave()}
+function spawn(k){const T=TY[k];E.push({k,T,lane:[-1,0,1][(Math.random()*3)|0],off:(Math.random()-.5)*16,z:.12,hp:T.hp,max:T.hp,state:'walk',t:0,fl:0,ph:Math.random()*6})}
+function press(src){
+ if(scene==='title'){startOrCal();return}
+ if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
+ if(scene==='end'){if(endT>1.5)startOrCal();return}
+ if(src!=='arm'&&camLive())return; // camera on: only a real bat swing counts
+ if(sw||swCd>0)return;
+ swing=.28;swCd=.3;sw={pend:.12,pk:Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9)),src}}
+function pop(x,y,t,c){pops.push({x,y,t:0,s:t,c:c||'#fff'})}
+function hit(e,dmg){e.hp-=dmg;e.fl=.16;e.z=Math.max(.3,e.z-.11*dmg);combo++;comboT=1.8;if(combo>bestCombo)bestCombo=combo;score+=10*combo;shake=.12;
+ if(e.hp<=0){e.state='dead';e.t=0;kills++;score+=Math.round(e.T.pts*(1+combo*.1));pop(ex(e),ey(e)-eh(e)*.7,'KO!','#ffd860')}
+ else{e.state='stun';e.t=0;pop(ex(e),ey(e)-eh(e)*.8,dmg>2?'SMASH':'HIT','#fff')}}
+// A swing sweeps the bat's whole path: every enemy close enough to that path takes the hit. Swing speed sets the damage.
+function resolveSwing(){
+ const pw=clamp(sw.pk/(FORCE*2.2),.1,1),dmg=pw>.8?3:pw>.45?2:1,h=handPx();let x0=h.x,x1=h.x;
+ if(sw.src==='arm'){const nw=performance.now();for(const q of samples){if(nw-q.t>350)continue;const px=W*clamp(.5+(q.x-.5)*GX,.02,.98);x0=Math.min(x0,px);x1=Math.max(x1,px)}}
+ let n=0;
+ for(const e of E){if(e.state==='dead'||e.z<.45)continue;const half=e.T.w*eh(e)*.5+16;
+  if(pw>.92||(ex(e)>=x0-half&&ex(e)<=x1+half)){hit(e,pw>.92?Math.max(dmg,3):dmg);n++}}
+ if(pw>.92&&n)flash=.15;
+ if(!n){pop(h.x,h.y-8,'WHIFF','#9aa')}
+ sw=null}
+function hurt(e){hp-=e.T.dmg;hurtF=.3;shake=.35;combo=0;pop(VPX,H*.55,'-'+e.T.dmg,'#ff6a6a');if(hp<=0){hp=0;won=false;scene='end';endT=0}}
+function update(dt){clock+=dt;const nw=performance.now();spd=Math.max(armSpeed(nw),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;
+ if(camLive()&&spd>=FORCE&&cool<=0&&(scene==='title'||scene==='end'||scene==='play')){cool=.35;press('arm')}
+if(scene==='cal'){cal.t+=dt;
+  if(cal.done){if(cal.t>=0)startGame()}
+  else if(cal.hold>0){cal.hold-=dt;cal.cp=0}
+  else if(cal.t>1.2&&camLive()){const sp=Math.min(spd,10);if(sp>cal.cp)cal.cp=sp;
+   if(cal.cp>=.7&&sp<.35*cal.cp){const best=cal.peaks.length?Math.max(...cal.peaks):0;cal.hold=.9;
+    if(cal.cp>=.35*best){cal.peaks.push(cal.cp);cal.last=cal.cp;cal.n++;if(cal.n>=3)calFinish()}
+    cal.cp=0}}}
+ 
+ sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
+ if(swing>0)swing-=dt;if(swCd>0)swCd-=dt;if(flash>0)flash-=dt;if(hurtF>0)hurtF-=dt;if(shake>0)shake-=dt;if(scene==='end')endT+=dt;
+ for(const p of pops)p.t+=dt;pops=pops.filter(p=>p.t<.8);
+ if(scene!=='play')return;
+ if(sw){sw.pk=Math.max(sw.pk,spd);sw.pend-=dt;if(sw.pend<=0)resolveSwing()}
+ if(comboT>0){comboT-=dt;if(comboT<=0)combo=0}
+ if(bannerT>0)bannerT-=dt;
+ if(queue.length){spawnT-=dt;if(spawnT<=0&&E.filter(e=>e.state!=='dead').length<4){spawn(queue.shift());spawnT=1.1+Math.random()*.7}}
+ for(const e of E){e.t+=dt;e.ph+=dt*(4+e.T.spd*10);if(e.fl>0)e.fl-=dt;
+  if(e.state==='walk'){e.z+=e.T.spd*dt*(wave>=2?1.15:1);if(e.z>=.86){e.z=.86;e.state='wind';e.t=0}}
+  else if(e.state==='wind'){if(e.t>=(e.k==='f'?.95:.75)){hurt(e);if(scene!=='play')return;e.state='back';e.t=0}}
+  else if(e.state==='back'){e.z-=dt*.5;if(e.t>=.5){e.state='walk'}}
+  else if(e.state==='stun'){if(e.t>=.45)e.state='walk'}}
+ E=E.filter(e=>e.state!=='dead'||e.t<.5);
+ if(!queue.length&&E.length===0){waveGap+=dt;if(waveGap>1){waveGap=0;wave++;if(wave>=WAVES.length){won=true;scene='end';endT=0}else{hp=Math.min(100,hp+20);startWave()}}}else waveGap=0}
+// ---- drawing ----
+function txt(s,x,y,sz,col,al){const g=cg;g.font='bold '+sz+'px monospace';g.textAlign=al||'center';g.fillStyle='#000';g.fillText(s,x+1,y+1);g.fillStyle=col;g.fillText(s,x,y)}
+function poly(pts,col){g.fillStyle=col;g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.closePath();g.fill()}
+const MTN=Array.from({length:35},(_,i)=>Math.round(3+5*Math.abs(Math.sin(i*.9))+4*Math.abs(Math.sin(i*.37+1))+(i%5==2?4:0)));
+
+function bg(){
+ const sky=['#080618','#0e0a26','#160e34','#201244','#2c1654','#3c1a5c','#52206a','#6a2a70'];
+ sky.forEach((cl,i)=>{g.fillStyle=cl;g.fillRect(0,i*HZ/8,W,HZ/8+1)});
+ stars.forEach(s=>{g.fillStyle=s.b?'#fff':'#889';g.fillRect(s.x,s.y,1,1)});
+ BLD.forEach((b,i)=>{g.fillStyle=i%2?'#120a24':'#1a1030';g.fillRect(b.x,HZ-b.h,b.w,b.h);for(let y=HZ-b.h+3;y<HZ-2;y+=4)for(let x=b.x+2;x<b.x+b.w-2;x+=4)if(((x*7+y*13)%5)<2){g.fillStyle='#e8c060';g.fillRect(x,y,1,2)}});
+ g.fillStyle='#2a2438';g.fillRect(0,HZ,W,H-HZ);
+ for(let i=0;i<10;i++){const a=HZ+Math.pow(i/10,1.8)*(H-HZ),b=HZ+Math.pow((i+1)/10,1.8)*(H-HZ);g.fillStyle=i%2?'#2f2a40':'#272236';g.fillRect(0,a,W,b-a+1)}
+ g.fillStyle='#3c344c';poly([[0,HZ],[VPX-34,HZ],[VPX-150,H],[0,H]],'#3a3248');poly([[W,HZ],[VPX+34,HZ],[VPX+150,H+0],[W,H]],'#3a3248'); // sidewalks
+ g.strokeStyle='#d8c060';g.lineWidth=1;g.setLineDash([4,6]);g.beginPath();g.moveTo(VPX,HZ);g.lineTo(VPX,H);g.stroke();g.setLineDash([]);
+ // side buildings
+ poly([[0,0],[58,HZ-30],[58,HZ+2],[0,H-34]],'#1a1230');poly([[W,0],[W-58,HZ-30],[W-58,HZ+2],[W,H-34]],'#1a1230');
+ for(let r=0;r<5;r++){const t=(r+1)/6;g.fillStyle=(r+Math.floor(clock*.4))%3?'#e8c060':'#40304e';g.fillRect(6+t*34,t*(HZ-24)+4,8*(1-t*.5),6*(1-t*.4));g.fillStyle=(r+1+Math.floor(clock*.3))%3?'#e8c060':'#40304e';g.fillRect(W-14-t*34-8*(1-t*.5),t*(HZ-24)+4,8*(1-t*.5),6*(1-t*.4))}
+ for(const sd of[-1,1]){const lx=VPX+sd*58,ly=HZ+2;g.fillStyle='#222';g.fillRect(lx-1,ly-22,2,22);g.fillStyle='rgba(255,220,120,.35)';g.beginPath();g.arc(lx,ly-23,7,0,7);g.fill();g.fillStyle='#ffe090';g.fillRect(lx-2,ly-24,4,2)}
+ g.fillStyle='rgba(232,96,160,.22)';g.fillRect(0,HZ-3,W,3)}
+function drawFig(e){
+ const x=ex(e),fy=ey(e),T=e.T;let fh=eh(e),fw=fh*T.w,a=1;
+ if(e.state==='dead'){const k=clamp(e.t/.5,0,1);a=1-k;fh*=1-k*.5}
+ const white=e.fl>0,wind=e.state==='wind',lean=e.state==='stun'?-fh*.05:0,bob=Math.sin(e.ph)*fh*.025;
+ g.globalAlpha=a;
+ const C=white?'#fff':T.col,C2=white?'#fff':T.col2,SK=white?'#fff':'#d9a066';
+ g.fillStyle='rgba(0,0,0,.35)';g.beginPath();g.ellipse(x,fy,fw*.7,fh*.05,0,0,7);g.fill();
+ const legH=fh*.42,tH=fh*.34,hd=fw*.62,ty=fy-legH-tH+bob;
+ const sw1=Math.sin(e.ph)*fw*.12;
+ g.fillStyle=C2;g.fillRect(x-fw*.34+sw1+lean,fy-legH,fw*.3,legH);g.fillRect(x+fw*.04-sw1+lean,fy-legH,fw*.3,legH);
+ g.fillStyle='#111';g.fillRect(x-fw*.36+sw1+lean,fy-fh*.03,fw*.34,fh*.03);g.fillRect(x+fw*.02-sw1+lean,fy-fh*.03,fw*.34,fh*.03);
+ g.fillStyle=C;g.fillRect(x-fw*.5+lean,ty,fw,tH);
+ if(e.k==='f'&&!white){g.fillStyle='#f0e0a0';g.fillRect(x-fw*.12+lean,ty,fw*.24,tH)}
+ g.fillStyle=SK;g.fillRect(x-hd/2+lean*1.5,ty-hd*.95,hd,hd);
+ g.fillStyle=white?'#fff':(e.k==='f'?'#e8c020':'#1a1018');g.fillRect(x-hd/2+lean*1.5,ty-hd*.95,hd,hd*.32);
+ if(!white){g.fillStyle='#120808';const ey2=ty-hd*.5;g.fillRect(x-hd*.28+lean*1.5,ey2,Math.max(1,hd*.14),Math.max(1,hd*.12));g.fillRect(x+hd*.14+lean*1.5,ey2,Math.max(1,hd*.14),Math.max(1,hd*.12))}
+ g.fillStyle=SK;
+ if(wind){const aw=fw*.2,sx=x+fw*.5+lean,sy=ty+tH*.1,top=ty-hd*1.7+bob; // right arm up, pipe overhead
+  g.fillRect(sx,top,aw,sy-top+tH*.1);g.fillStyle=white?'#fff':'#b8b8c4';g.fillRect(sx-aw*.4,top-fh*.16,aw*1.8,fh*.18);
+  g.fillStyle=SK;g.fillRect(x-fw*.5-fw*.2+lean,ty,fw*.2,tH*.9);
+  g.fillStyle='rgba(255,60,60,'+(.15+.15*Math.sin(clock*30))+')';g.fillRect(x-fw*.8,fy-fh*1.25,fw*1.6,fh*1.3)}
+ else{g.fillRect(x-fw*.5-fw*.2+lean,ty,fw*.2,tH*.9);g.fillRect(x+fw*.5+lean,ty,fw*.2,tH*.9)}
+ g.globalAlpha=1;
+ if(e.max>2&&e.state!=='dead'){const bw=fw*.9;g.fillStyle='#000';g.fillRect(x-bw/2,fy-fh-hd*.2-4,bw,3);g.fillStyle='#e04040';g.fillRect(x-bw/2,fy-fh-hd*.2-4,bw*clamp(e.hp/e.max,0,1),3)}}
+function arm(x0,y0,x1,y1,col){const dx=x1-x0,dy=y1-y0,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;poly([[x0+nx*9,y0+ny*9],[x1+nx*4.5,y1+ny*4.5],[x1-nx*4.5,y1-ny*4.5],[x0-nx*9,y0-ny*9]],col)}
+function fist(x,y){g.fillStyle='#d9a066';g.fillRect(x-5,y-4,10,8);g.fillStyle='#a8743c';g.fillRect(x-5,y+1,10,3);g.fillStyle='#8a5a2c';g.fillRect(x-1,y-4,1,6);g.fillRect(x+2,y-4,1,6)}
+
+function drawBat(){const h=handPx(),sp=swing>0?(1-swing/.28):0;
+ const a=swing>0?-2.3+sp*2.3:-2.3,L=48,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=h.x+ux*L,ty=h.y+uy*L;
+ poly([[h.x+nx*2,h.y+ny*2],[tx+nx*5,ty+ny*5],[tx-nx*5,ty-ny*5],[h.x-nx*2,h.y-ny*2]],'#e8701c');
+ poly([[h.x+ux*(L-14)+nx*3,h.y+uy*(L-14)+ny*3],[tx+nx*5,ty+ny*5],[tx-nx*5,ty-ny*5],[h.x+ux*(L-14)-nx*3,h.y+uy*(L-14)-ny*3]],'#ff9a3c');
+ const f2={x:h.x+ux*9,y:h.y+uy*9};
+ arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
+ fist(f2.x,f2.y);fist(h.x,h.y);
+ if(swing>0){g.strokeStyle='rgba(255,200,120,.6)';g.lineWidth=2;g.beginPath();g.arc(h.x,h.y,L*.9,a-.9,a);g.stroke()}}
+function draw(){
+ g.save();if(shake>0)g.translate((Math.random()-.5)*5*shake/.35,(Math.random()-.5)*4*shake/.35);
+ bg();
+ if(scene==='play'){[...E].sort((p,q)=>p.z-q.z).forEach(drawFig)}
+ g.restore();
+ if(scene!=='title')drawBat();
+ if(hurtF>0){g.fillStyle='rgba(220,20,20,'+(hurtF/.3*.45)+')';g.fillRect(0,0,W,H)}
+ if(flash>0){g.fillStyle='rgba(255,255,255,'+(flash/.15*.6)+')';g.fillRect(0,0,W,H)}
+ if(scene!=='play'){g.fillStyle=scene==='title'?'rgba(0,0,0,.55)':'rgba(0,0,0,.6)';g.fillRect(0,0,W,H)}
+ present();
+ if(scene==='play'){
+  cg.fillStyle='rgba(0,0,0,.65)';cg.fillRect(5,5,84,9);cg.fillStyle=hp>35?'#5adf5a':'#ef4a4a';cg.fillRect(6,6,82*clamp(hp/100,0,1),7);txt('HP',7,22,8,'#fff','left');
+  txt('SCORE '+score,W-6,12,9,'#fff','right');
+  if(combo>1)txt(combo+' HIT COMBO',W-6,24,9,'#ffd860','right');
+  if(bannerT>0)txt(banner,W/2,H*.3,15,'#ffd860');
+  for(const p of pops)txt(p.s,p.x,p.y-p.t*18,9,p.c);
+  if(!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
+  else if(wave===0&&E.length<3)txt(camLive()?'SWING THE BAT SIDE TO SIDE - HIT THEM BEFORE THEY HIT YOU':'PRESS OK TO SWING',W/2,H-12,7,'#fff');
+  {const mw=70,fr=clamp(spd/(FORCE*2.2),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.fillRect(6+mw*FORCE/(FORCE*2.2),H-12,1,7)}}
+ else if(scene==='title'){
+  txt('BAT ALLEY',W/2,44,26,'#ff9a3c');
+  txt('FIRST-PERSON STREET BRAWLER. YOUR BAT IS TRACKED BY THE PHONE CAMERA.',W/2,66,7,'#fff');
+  txt(camLive()?'SWING SIDE TO SIDE TO CLEAR THE ALLEY. HARDER SWING = MORE DAMAGE.':'PRESS OK TO SWING AT THE ENEMY IN FRONT OF YOU',W/2,78,7,'#fff');
+  txt(camLive()?'SWING TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
+  txt(DEBUG?'DEBUG: MOUSE = BAT, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
+ else if(scene==='cal'){
+  txt('WARM UP',W/2,34,18,'#ffd860');
+  if(cal.done)txt('READY - HERE THEY COME',W/2,70,9,'#7dff7d');
+  else{txt('SWING YOUR BAT 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
+   txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
+   if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
+   if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
+ else{
+  txt(won?'ALLEY CLEARED!':'KNOCKED OUT',W/2,48,18,won?'#7dff7d':'#ff6a6a');
+  txt('SCORE '+score,W/2,70,12,'#ffd860');txt('KOS '+kills+'   BEST COMBO '+bestCombo,W/2,88,9,'#fff');
+  if(endT>1.5)txt(camLive()?'SWING TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,112,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
+// ---- input ----
+const FIRE_KC=[13,23,32,96,103,105];
+addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
+if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H);hand.t=0};
+ addEventListener('mousemove',m);addEventListener('mousedown',e=>{m(e);press()})}
+let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
+// ---- loop ----
+let last=performance.now();
+function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+window.__disp=toScreen;window.__fb=()=>({FORCE,cal:{n:cal.n,done:cal.done},scene,hp,score,wave,kills,combo,won,phoneUp,E:E.map(e=>({k:e.k,z:e.z,state:e.state,hp:e.hp,x:ex(e)}))});
+</script></body></html>
