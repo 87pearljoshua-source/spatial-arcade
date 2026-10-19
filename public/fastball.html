@@ -4,11 +4,14 @@ canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rend
 <canvas id="c" width="256" height="144"></canvas>
 <script src="/qr.js"></script>
 <script>
-// FASTBALL - first-person batting demo. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate.
+// FASTBALL - first-person batting demo. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate your arm speed.
 const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
 let FORCE=+qp.get('force')||1.2;const OKSWING=qp.has('okswing'),NOCAL=qp.has('nocal')||qp.has('force')||DEBUG; // arm speed (camera-widths/s) that counts as a swing; ?okswing lets OK swing too
 const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8; // hand gain (tune if your reach feels too small/large)
 const W=256,H=144,HZ=52,VPX=128,NP=5,R=20; // R = bat zone radius in scene pixels
+const MIN_DISP = 0.035;        // ignore tiny jitter / hand drift so false swings are rare
+const SWING_CONS_WINDOW = 80;  // ms window for confirmation spikes
+const SWING_CONS_REQUIRED = 2; // require two quick confirmations before starting a swing
 const c=document.getElementById('c'),cg=c.getContext('2d');
 const bufc=document.createElement('canvas');bufc.width=256;bufc.height=144;
 const g=bufc.getContext('2d',{willReadFrequently:true});g.imageSmoothingEnabled=false; // scene is drawn here, then bent + posterized onto the screen canvas
@@ -16,29 +19,31 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 // ---- fisheye + PS1-style color (precomputed once) ----
 const FK=.5,MAP=new Int32Array(W*H),VG=new Uint16Array(W*H),BAY=[-4,0,-3,1,2,-2,3,-1,-3,1,-4,0,4,-1,2,-2];
 for(let y=0;y<H;y++)for(let x=0;x<W;x++){const px=(x+.5)/W*2-1,py=(y+.5)/H*2-1,r2=px*px+py*py,f=(1+FK*r2)/(1+FK);
- const sx=Math.floor((px*f+1)/2*W),sy=Math.floor((py*f+1)/2*H),i=y*W+x;
- MAP[i]=(sx<0||sx>=W||sy<0||sy>=H)?-1:sy*W+sx;VG[i]=Math.max(40,Math.round(256*(1-.42*(r2/2)*(r2/2)*2)))}
+  const sx=Math.floor((px*f+1)/2*W),sy=Math.floor((py*f+1)/2*H),i=y*W+x;
+  MAP[i]=(sx<0||sx>=W||sy<0||sy>=H)?-1:sy*W+sx;VG[i]=Math.max(40,Math.round(256*(1-.42*(r2/2)*(r2/2)*2))) }
 function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.buffer),od=cg.createImageData(W,H),out=new Uint32Array(od.data.buffer);
- for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0){out[i]=0xFF000000;continue}
-  const p=src[s],v=VG[i],d=BAY[(i&3)|(((i>>8)&3)<<2)];
-  let r=((p&255)*v>>8)+d,gg=(((p>>8)&255)*v>>8)+d,b=(((p>>16)&255)*v>>8)+d;
-  r=r<0?0:r>255?255:r;gg=gg<0?0:gg>255?255:gg;b=b<0?0:b>255?255:b;r&=0xF8;gg&=0xF8;b&=0xF8;r|=r>>5;gg|=gg>>5;b|=b>>5;
-  out[i]=0xFF000000|(b<<16)|(gg<<8)|r}
- cg.putImageData(od,0,0)}
+  for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0){out[i]=0xFF000000;continue}
+   const p=src[s],v=VG[i],d=BAY[(i&3)|(((i>>8)&3)<<2)];
+   let r=((p&255)*v>>8)+d,gg=(((p>>8)&255)*v>>8)+d,b=(((p>>16)&255)*v>>8)+d;
+   r=r<0?0:r>255?255:r;gg=gg<0?0:gg>255?255:gg;b=b<0?0:b>255?255:b;r&=0xF8;gg&=0xF8;b&=0xF8;r|=r>>5;gg|=gg>>5;b|=b>>5;
+   out[i]=0xFF000000|(b<<16)|(gg<<8)|r}
+  cg.putImageData(od,0,0)}
 // screen pixel -> scene pixel (so a mouse lines up with what you see)
 const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
 // scene pixel -> screen pixel (test hook only)
-const toScreen=(sx,sy)=>{let best=null,bd=1e9;for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0)continue;const d=Math.abs(s%W-sx)+Math.abs(((s/W)|0)-sy);if(d<bd){bd=d;best=i;if(d===0)break}}return{x:best%W+.5,y:((best/W)|0)+.5}};
+const toScreen=(sx,sy)=>{let best=null,bd=1e9;for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0)continue;const d=Math.abs(s%W-sx)+Math.abs(((s/W)|0)-sy);if(d<bd){bd=d;best=i;if(d===0)break}}return{x:best===null?0:(best%W),y:best===null?0:((best/W)|0)}};
 let samples=[],spd=0,cool=0;let hand={x:.5,y:.6,t:0},sm={x:.5,y:.6},dbg=null;
 let cal={n:0,cp:0,peaks:[],t:0,done:NOCAL,last:0,hold:0},scene='title',pitchN=0,score=0,hits=0,P=null,gap=0,swing=0,res='',resT=0,endT=0,phoneUp=false,clock=0;
+let _swingCandidateTime = 0;
+let _swingCandidateCount = 0;
 const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-6),b:i%3}));
 // ---- network ----
 let ws=null;
 function conn(){try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
  ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
   if(m.type==='peer_joined')phoneUp=true;else if(m.type==='peer_left')phoneUp=false;
-  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift()}}
-  else if(m.type==='fire_down')press()};
+  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift();}}
+  else if(m.type==='fire_down')press();
  ws.onclose=()=>{phoneUp=false;setTimeout(conn,1500)};ws.onerror=()=>{try{ws.close()}catch(e){}}}catch(e){setTimeout(conn,3000)}}
 conn();
 // ---- game ----
@@ -50,145 +55,164 @@ let resSub='',resCol='#ff6a6a',best=0;
 function setRes(t,sub,col,dur){res=t;resSub=sub||'';resCol=col||'#ff6a6a';resT=dur||1.1;if(P)P.res=t}
 const camLive=()=>performance.now()-hand.t<1500;
 function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;
- let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;
- return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
+  let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;
+  const dx=b.x-a.x,dy=b.y-a.y,dist=Math.hypot(dx,dy);
+  if(dist<MIN_DISP)return 0;
+  return dist/((b.t-a.t)/1000)}
 function startOrCal(){if(camLive()&&!cal.done){scene='cal';cal.n=0;cal.cp=0;cal.peaks=[];cal.t=0;cal.last=0;cal.hold=0}else startGame()}
 function calFinish(){const q=cal.peaks.slice().sort((x,y)=>x-y),a=q[q.length>>1];FORCE=clamp(.6*a,.8,6);cal.done=true;cal.t=-1.4}
 function press(src){
- if(scene==='title'){startOrCal();return}
- if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
- if(scene==='end'){if(endT>1.2)startOrCal();return}
- if(src!=='arm'&&camLive()&&!OKSWING)return; // camera on: only a real arm swing counts
- if(!P||P.swung||P.state==='hit'||P.state==='wind')return;
- swing=.28;P.swung=true;P.pend=.14;P.pk=Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9))} // contact is decided after .14 s, once the swing's peak speed is known
+  if(scene==='title'){startOrCal();return}
+  if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
+  if(scene==='end'){if(endT>1.2)startOrCal();return}
+  if(src!=='arm'&&camLive()&&!OKSWING)return; // camera on: only a real arm swing counts
+  if(!P||P.swung||P.state==='hit'||P.state==='wind')return;
+  swing=.28;P.swung=true;P.pend=.14;P.pk=Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9))} // contact is decided after .14 s, once the swing's peak speed is known
 // Any swing that is not drastically early/late makes contact. Timing + a dice roll pick the kind of hit; swing speed sets the distance.
 const FENCE=330,HITS={'GROUNDER':50,'POP FLY':50,'LINE DRIVE':150,'FLY BALL':150,'HOME RUN':400,'FOUL BALL':0};
 function resolve(){
- const z=P.z,b=ballPos(P);
- if(z<.45){setRes('TOO EARLY');return}
- if(z>1.18){setRes('TOO LATE');return}
- const q=1-clamp(Math.abs(z-.95)/.25,0,1);            // 1 = perfect timing
- const pw=clamp(P.pk/(FORCE*2.2),.12,1),jit=.85+Math.random()*.3;
- let type,dist;
- if(Math.random()<.10+(1-q)*.35){type='FOUL BALL';dist=60+pw*250*jit}
- else{const k=Math.random();
-  if(k<.2){type='GROUNDER';dist=40+pw*110*jit}
-  else if(k<.5){type='LINE DRIVE';dist=90+pw*260*jit}
-  else if(k<.85){type='FLY BALL';dist=120+pw*330*jit}
-  else{type='POP FLY';dist=30+pw*90*jit}}
- dist=Math.round(dist);
- if((type==='FLY BALL'||type==='LINE DRIVE')&&dist>=FENCE)type='HOME RUN';
- const foul=type==='FOUL BALL',sgn=Math.random()<.5?-1:1;
- P.fl={x0:b.x,y0:b.y,r0:b.r,sx:foul?sgn*(110+Math.random()*50):(Math.random()-.5)*150,
-  y1:foul?H*.62:(type==='HOME RUN'?HZ-8:HZ+4+(1-clamp(dist/450,0,1))*20),
-  lift:{'GROUNDER':3,'LINE DRIVE':26,'FLY BALL':62,'POP FLY':80,'HOME RUN':58,'FOUL BALL':40}[type],
-  r1:Math.max(1,5*(1-clamp(dist/500,0,1))),dur:type==='HOME RUN'?2:1.5};
- P.state='hit';P.t=0;P.type=type;P.hp={x:b.x,y:b.y,r:b.r};
- const pts=HITS[type]+(q>.85&&!foul?50:0);if(!foul){hits++;score+=pts;if(dist>best)best=dist}
- setRes(type+(type==='HOME RUN'?'!':''),dist+' FT',foul?'#ffb060':(type==='HOME RUN'?'#ffd860':'#7dff7d'),2.0)}
-function finishPitch(){if(!P.swung&&!P.res){const inZone=P.tx>=W*.36&&P.tx<=W*.64&&P.ty>=H*.52&&P.ty<=H*.68;setRes(inZone?'STRIKE':'BALL','NO SWING',inZone?'#ff6a6a':'#cfd8ff')}pitchN++;P=null;if(pitchN>=NP){scene='end';endT=0}else gap=.8}
-function update(dt){clock+=dt;const nw=performance.now();spd=Math.max(armSpeed(nw),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;
- if(camLive()&&spd>=FORCE&&cool<=0&&(scene==='title'||scene==='end'||(scene==='play'&&P&&!P.swung&&P.state!=='wind'))){cool=.6;press('arm')}
+  const z=P.z,b=ballPos(P);
+  if(z<.45){setRes('TOO EARLY');return}
+  if(z>1.18){setRes('TOO LATE');return}
+  const q=1-clamp(Math.abs(z-.95)/.25,0,1);            // 1 = perfect timing
+  const pw=clamp(P.pk/(FORCE*2.2),.12,1),jit=.85+Math.random()*.3;
+  let type,dist;
+  if(Math.random()<.10+(1-q)*.35){type='FOUL BALL';dist=60+pw*250*jit}
+  else{const k=Math.random();
+   if(k<.2){type='GROUNDER';dist=40+pw*110*jit}
+   else if(k<.5){type='LINE DRIVE';dist=90+pw*260*jit}
+   else if(k<.85){type='FLY BALL';dist=120+pw*330*jit}
+   else{type='POP FLY';dist=30+pw*90*jit}}
+  dist=Math.round(dist);
+  if((type==='FLY BALL'||type==='LINE DRIVE')&&dist>=FENCE)type='HOME RUN';
+  const foul=type==='FOUL BALL',sgn=Math.random()<.5?-1:1;
+  P.fl={x0:b.x,y0:b.y,r0:b.r,sx:foul?sgn*(110+Math.random()*50):(Math.random()-.5)*150,
+   y1:foul?H*.62:(type==='HOME RUN'?HZ-8:HZ+4+(1-clamp(dist/450,0,1))*20),
+   lift:{'GROUNDER':3,'LINE DRIVE':26,'FLY BALL':62,'POP FLY':80,'HOME RUN':58,'FOUL BALL':40}[type],
+   r1:Math.max(1,5*(1-clamp(dist/500,0,1))),dur:type==='HOME RUN'?2:1.5};
+  P.state='hit';P.t=0;P.type=type;P.hp={x:b.x,y:b.y,r:b.r};
+  const pts=HITS[type]+(q>.85&&!foul?50:0);if(!foul){hits++;score+=pts;if(dist>best)best=dist}
+  setRes(type+(type==='HOME RUN'?'!':''),dist+' FT',foul?'#ffb060':(type==='HOME RUN'?'#ffd860':'#7dff7d'),2.0)}
+function finishPitch(){if(!P.swung&&!P.res){const inZone=P.tx>=W*.36&&P.tx<=W*.64&&P.ty>=H*.52&&P.ty<=H*.68;setRes(inZone?'STRIKE':'BALL','NO SWING',inZone?'#ff6a6a':'#cfd8ff')}pitchN++;P=null;if(pitchN>=NP){scene='end';endT=0;return}gap=.7}
+function update(dt){clock+=dt;const nw=performance.now();
+  const instSpeed = armSpeed(nw);
+  spd = Math.max(instSpeed, spd * Math.pow(.02,dt));
+  if(cool>0)cool-=dt;
+  if (camLive() && instSpeed >= FORCE && cool <= 0) {
+    if (nw - _swingCandidateTime <= SWING_CONS_WINDOW) {
+      _swingCandidateCount += 1;
+    } else {
+      _swingCandidateCount = 1;
+    }
+    _swingCandidateTime = nw;
+    if (_swingCandidateCount >= SWING_CONS_REQUIRED && (scene==='title'||scene==='end'||(scene==='play'&&P&&!P.swung&&P.state!=='wind'))) {
+      cool=.6;
+      _swingCandidateCount=0;
+      press('arm');
+    }
+  } else if (nw - _swingCandidateTime > SWING_CONS_WINDOW) {
+    _swingCandidateCount = 0;
+  }
 
- if(scene==='cal'){cal.t+=dt;
-  if(cal.done){if(cal.t>=0)startGame()}
-  else if(cal.hold>0){cal.hold-=dt;cal.cp=0}
-  else if(cal.t>1.2&&camLive()){const sp=Math.min(spd,10);if(sp>cal.cp)cal.cp=sp;
-   if(cal.cp>=.7&&sp<.35*cal.cp){const best=cal.peaks.length?Math.max(...cal.peaks):0;cal.hold=.9;
-    if(cal.cp>=.35*best){cal.peaks.push(cal.cp);cal.last=cal.cp;cal.n++;if(cal.n>=3)calFinish()}
-    cal.cp=0}}}
- sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
- if(swing>0)swing-=dt;if(resT>0)resT-=dt;if(scene==='end')endT+=dt;
- if(scene!=='play')return;
- if(!P){gap-=dt;if(gap<=0)newPitch();return}
- P.t+=dt;
- if(P.pend>0){P.pk=Math.max(P.pk,spd);P.pend-=dt;if(P.pend<=0)resolve()}
- if(P.state==='wind'){P.z=0;if(P.t>=1){P.state='fast';P.t=0}}
- else if(P.state==='fast'){P.z=.7*Math.pow(Math.min(P.t/1.2,1),1.4);if(P.t>=1.2){P.state='slow';P.t=0}}
- else if(P.state==='slow'){P.z=.7+.3*Math.min(P.t/1.8,1);if(P.t>=1.8){P.state='pass';P.t=0}}
- else if(P.state==='pass'){P.z=1+P.t*.6;if(P.t>=.6)finishPitch()}
- else if(P.state==='hit'){const f=P.fl,u=Math.min(P.t/f.dur,1),h=P.hp;h.x=f.x0+f.sx*u;h.y=f.y0+(f.y1-f.y0)*u-f.lift*4*u*(1-u);h.r=Math.max(f.r1,f.r0*(1-.93*u));if(P.t>=f.dur+.5)finishPitch()}
- if(P&&(P.state==='fast'||P.state==='slow')){P.trail.push(ballPos(P));if(P.trail.length>7)P.trail.shift()}}
+  if(scene==='cal'){cal.t+=dt;
+   if(cal.done){if(cal.t>=0)startGame()}
+   else if(cal.hold>0){cal.hold-=dt;cal.cp=0}
+   else if(cal.t>1.2&&camLive()){const sp=Math.min(spd,10);if(sp>cal.cp)cal.cp=sp;
+    if(cal.cp>=.7&&sp<.35*cal.cp){const best=cal.peaks.length?Math.max(...cal.peaks):0;cal.hold=.9;
+     if(cal.cp>=.35*best){cal.peaks.push(cal.cp);cal.last=cal.cp;cal.n++;if(cal.n>=3)calFinish()}
+     cal.cp=0}}}
+  sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
+  if(swing>0)swing-=dt;if(resT>0)resT-=dt;if(scene==='end')endT+=dt;
+  if(scene!=='play')return;
+  if(!P){gap-=dt;if(gap<=0)newPitch();return}
+  P.t+=dt;
+  if(P.pend>0){P.pk=Math.max(P.pk,spd);P.pend-=dt;if(P.pend<=0)resolve()}
+  if(P.state==='wind'){P.z=0;if(P.t>=1){P.state='fast';P.t=0}}
+  else if(P.state==='fast'){P.z=.7*Math.pow(Math.min(P.t/1.2,1),1.4);if(P.t>=1.2){P.state='slow';P.t=0}}
+  else if(P.state==='slow'){P.z=.7+.3*Math.min(P.t/1.8,1);if(P.t>=1.8){P.state='pass';P.t=0}}
+  else if(P.state==='pass'){P.z=1+P.t*.6;if(P.t>=.6)finishPitch()}
+  else if(P.state==='hit'){const f=P.fl,u=Math.min(P.t/f.dur,1),h=P.hp;h.x=f.x0+f.sx*u;h.y=f.y0+(f.y1-f.y0)*u-f.lift*4*u*(1-u);h.r=Math.max(f.r1,f.r0*(1-.93*u));if(P.t>=f.dur+.5)finishPitch()}
+  if(P&&(P.state==='fast'||P.state==='slow')){P.trail.push(ballPos(P));if(P.trail.length>7)P.trail.shift()}}
 // ---- drawing ----
 function txt(s,x,y,sz,col,al){const g=cg;g.font='bold '+sz+'px monospace';g.textAlign=al||'center';g.fillStyle='#000';g.fillText(s,x+1,y+1);g.fillStyle=col;g.fillText(s,x,y)}
 function poly(pts,col){g.fillStyle=col;g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.closePath();g.fill()}
 const MTN=Array.from({length:35},(_,i)=>Math.round(3+5*Math.abs(Math.sin(i*.9))+4*Math.abs(Math.sin(i*.37+1))+(i%5==2?4:0)));
 function bg(){
- const sky=['#1b1040','#2a1450','#3c1a5c','#5a2266','#7e2f6c','#a8446a','#d4603c','#f09040'];
- sky.forEach((cl,i)=>{g.fillStyle=cl;g.fillRect(0,i*HZ/8,W,HZ/8+1)});
- g.fillStyle='rgba(0,0,0,.35)';for(let i=1;i<8;i++){const y=Math.round(i*HZ/8);for(let x=(i&1);x<W;x+=2)g.fillRect(x,y,1,1)} // dithered band edges
- stars.forEach(s=>{g.fillStyle=s.b?'#fff':'#bbb';g.fillRect(s.x,s.y,1,1)});
- g.fillStyle='#e8d8f0';g.beginPath();g.arc(205,20,10,0,7);g.fill();g.fillStyle='#c0a8d0';g.beginPath();g.arc(201,17,3,0,7);g.fill();g.beginPath();g.arc(210,25,2,0,7);g.fill();
- g.fillStyle='#9ad0e0';g.beginPath();g.arc(48,30,5,0,7);g.fill();
- // jagged far mountains
- g.fillStyle='#2e1a46';g.beginPath();g.moveTo(0,HZ);MTN.forEach((h,i)=>g.lineTo(i*8,HZ-h));g.lineTo(W,HZ);g.closePath();g.fill();
- g.fillStyle='rgba(240,144,64,.38)';g.fillRect(0,HZ-4,W,4); // haze
- g.fillStyle='#173a3a';g.fillRect(0,HZ,W,H-HZ);
- for(let i=0;i<7;i++){const y=HZ+Math.pow(i/7,1.8)*(H-HZ);g.fillStyle=i%2?'#1d4a46':'#143030';g.fillRect(0,y,W,(H-HZ)/7)}
- g.strokeStyle='#3f8a7a';g.lineWidth=1;g.beginPath();for(let i=-6;i<=6;i++){g.moveTo(VPX+i*6,HZ);g.lineTo(VPX+i*55,H)}g.stroke();
- // the thrower: tiny, dim, shimmering in the heat. Nothing about the release is visible.
- const wind=P&&P.state==='wind'?P.t:0,sh=Math.round(Math.sin(clock*23)*.6);
- g.fillStyle='#7a3c58';g.fillRect(VPX-1+sh,HZ-6,2,2);g.fillRect(VPX-1+sh,HZ-4,2,3);
- if(wind>.3&&wind<.8)g.fillRect(VPX+1+sh,HZ-6,1,2)}
+  const sky=['#1b1040','#2a1450','#3c1a5c','#5a2266','#7e2f6c','#a8446a','#d4603c','#f09040'];
+  sky.forEach((cl,i)=>{g.fillStyle=cl;g.fillRect(0,i*HZ/8,W,HZ/8+1)});
+  g.fillStyle='rgba(0,0,0,.35)';for(let i=1;i<8;i++){const y=Math.round(i*HZ/8);for(let x=(i&1);x<W;x+=2)g.fillRect(x,y,1,1)} // dithered band edges
+  stars.forEach(s=>{g.fillStyle=s.b?'#fff':'#bbb';g.fillRect(s.x,s.y,1,1)});
+  g.fillStyle='#e8d8f0';g.beginPath();g.arc(205,20,10,0,7);g.fill();g.fillStyle='#c0a8d0';g.beginPath();g.arc(201,17,3,0,7);g.fill();g.beginPath();g.arc(210,25,2,0,7);g.fill();
+  g.fillStyle='#9ad0e0';g.beginPath();g.arc(48,30,5,0,7);g.fill();
+  // jagged far mountains
+  g.fillStyle='#2e1a46';g.beginPath();g.moveTo(0,HZ);MTN.forEach((h,i)=>g.lineTo(i*8,HZ-h));g.lineTo(W,HZ);g.closePath();g.fill();
+  g.fillStyle='rgba(240,144,64,.38)';g.fillRect(0,HZ-4,W,4); // haze
+  g.fillStyle='#173a3a';g.fillRect(0,HZ,W,H-HZ);
+  for(let i=0;i<7;i++){const y=HZ+Math.pow(i/7,1.8)*(H-HZ);g.fillStyle=i%2?'#1d4a46':'#143030';g.fillRect(0,y,W,(H-HZ)/7)}
+  g.strokeStyle='#3f8a7a';g.lineWidth=1;g.beginPath();for(let i=-6;i<=6;i++){g.moveTo(VPX+i*6,HZ);g.lineTo(VPX+i*55,H)}g.stroke();
+  // the thrower: tiny, dim, shimmering in the heat. Nothing about the release is visible.
+  const wind=P&&P.state==='wind'?P.t:0,sh=Math.round(Math.sin(clock*23)*.6);
+  g.fillStyle='#7a3c58';g.fillRect(VPX-1+sh,HZ-6,2,2);g.fillRect(VPX-1+sh,HZ-4,2,3);
+  if(wind>.3&&wind<.8)g.fillRect(VPX+1+sh,HZ-6,1,2)}
 function streak(){if(!P||P.trail.length<2)return;g.strokeStyle='rgba(255,235,210,.2)';g.lineWidth=1;g.beginPath();g.moveTo(P.trail[0].x,P.trail[0].y);P.trail.forEach(t=>g.lineTo(t.x,t.y));g.stroke()}
 function ball(b,a){g.globalAlpha=a;const r=b.r;
- if(r<3.2){g.fillStyle='#26101e';const d=Math.max(1,Math.round(r*2));g.fillRect(Math.round(b.x-d/2),Math.round(b.y-d/2),d,d)}
- else{g.fillStyle='#1c0c18';g.beginPath();g.arc(b.x,b.y,r+1,0,7);g.fill();
-  g.fillStyle='#ece4cc';g.beginPath();g.arc(b.x,b.y,r,0,7);g.fill();
-  g.fillStyle='#c4b898';g.beginPath();g.arc(b.x+r*.3,b.y+r*.3,r*.7,0,7);g.fill();
-  g.strokeStyle='#d03030';g.lineWidth=1;const sp=(clock*(P&&P.state==='slow'?2.5:9))%6.28;
-  g.beginPath();g.arc(b.x-r*.9+Math.sin(sp)*r*.25,b.y,r*.8,-.9,.9);g.stroke();g.beginPath();g.arc(b.x+r*.9+Math.sin(sp)*r*.25,b.y,r*.8,Math.PI-.9,Math.PI+.9);g.stroke()}
- g.globalAlpha=1}
+  if(r<3.2){g.fillStyle='#26101e';const d=Math.max(1,Math.round(r*2));g.fillRect(Math.round(b.x-d/2),Math.round(b.y-d/2),d,d)}
+  else{g.fillStyle='#1c0c18';g.beginPath();g.arc(b.x,b.y,r+1,0,7);g.fill();
+   g.fillStyle='#ece4cc';g.beginPath();g.arc(b.x,b.y,r,0,7);g.fill();
+   g.fillStyle='#c4b898';g.beginPath();g.arc(b.x+r*.3,b.y+r*.3,r*.7,0,7);g.fill();
+   g.strokeStyle='#d03030';g.lineWidth=1;const sp=(clock*(P&&P.state==='slow'?2.5:9))%6.28;
+   g.beginPath();g.arc(b.x-r*.9+Math.sin(sp)*r*.25,b.y,r*.8,-.9,.9);g.stroke();g.beginPath();g.arc(b.x+r*.9+Math.sin(sp)*r*.25,b.y,r*.8,Math.PI-.9,Math.PI+.9);g.stroke()}
+  g.globalAlpha=1}
 function arm(x0,y0,x1,y1,col){const dx=x1-x0,dy=y1-y0,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;poly([[x0+nx*9,y0+ny*9],[x1+nx*4.5,y1+ny*4.5],[x1-nx*4.5,y1-ny*4.5],[x0-nx*9,y0-ny*9]],col)}
 function fist(x,y){g.fillStyle='#d9a066';g.fillRect(x-5,y-4,10,8);g.fillStyle='#a8743c';g.fillRect(x-5,y+1,10,3);g.fillStyle='#8a5a2c';g.fillRect(x-1,y-4,1,6);g.fillRect(x+2,y-4,1,6)}
 function drawHand(){const h=handPx();
- g.strokeStyle='rgba(255,255,255,.3)';g.lineWidth=1;g.setLineDash([3,3]);g.beginPath();g.arc(h.x,h.y,R,0,7);g.stroke();g.setLineDash([]);
- const a=swing>0?-2.2+(1-swing/.28)*2.0:-2.2,L=46,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=h.x+ux*L,ty=h.y+uy*L;
- poly([[h.x+nx*1.5,h.y+ny*1.5],[tx+nx*3.5,ty+ny*3.5],[tx-nx*3.5,ty-ny*3.5],[h.x-nx*1.5,h.y-ny*1.5]],'#9a6a38');
- poly([[h.x+ux*(L-12)+nx*3,h.y+uy*(L-12)+ny*3],[tx+nx*3.5,ty+ny*3.5],[tx,ty],[h.x+ux*(L-12),h.y+uy*(L-12)]],'#d8b078');
- const f2={x:h.x+ux*9,y:h.y+uy*9};
- arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
- fist(f2.x,f2.y);fist(h.x,h.y)}
+  g.strokeStyle='rgba(255,255,255,.3)';g.lineWidth=1;g.setLineDash([3,3]);g.beginPath();g.arc(h.x,h.y,R,0,7);g.stroke();g.setLineDash([]);
+  const a=swing>0?-2.2+(1-swing/.28)*2.0:-2.2,L=46,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=h.x+ux*L,ty=h.y+uy*L;
+  poly([[h.x+nx*1.5,h.y+ny*1.5],[tx+nx*3.5,ty+ny*3.5],[tx-nx*3.5,ty-ny*3.5],[h.x-nx*1.5,h.y-ny*1.5]],'#9a6a38');
+  poly([[h.x+ux*(L-12)+nx*3,h.y+uy*(L-12)+ny*3],[tx+nx*3.5,ty+ny*3.5],[tx,ty],[h.x+ux*(L-12),h.y+uy*(L-12)]],'#d8b078');
+  const f2={x:h.x+ux*9,y:h.y+uy*9};
+  arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
+  fist(f2.x,f2.y);fist(h.x,h.y)}
 function draw(){
- bg();
- const playing=scene==='play'&&P;
- if(playing){
-  if(P.state==='fast'||P.state==='slow')streak();
-  if(P.state!=='wind')ball(ballPos(P),P.state==='pass'?Math.max(0,1-P.t/.6):1);
-  if(P.state==='slow'){g.fillStyle='rgba(40,90,190,.18)';g.fillRect(0,0,W,H);g.fillStyle='#000';g.fillRect(0,0,W,8);g.fillRect(0,H-8,W,8)}}
- if(scene!=='title')drawHand();
- if(scene!=='play'){g.fillStyle=scene==='title'?'rgba(0,0,0,.55)':'rgba(0,0,0,.6)';g.fillRect(0,0,W,H)}
- present(); // bend + posterize onto the screen, then draw crisp text on top
- if(playing&&P.state==='slow'&&Math.floor(clock*3)%2)txt('SLOW',W/2,H-2.5,7,'#8fd0ff');
- if(playing&&P.state==='wind')txt('PITCH INCOMING',W/2,28,9,'#ffd860');
- if(scene==='play'){
-  txt('PITCH '+Math.min(pitchN+1,NP)+'/'+NP,6,12,9,'#fff','left');txt('SCORE '+score,W-6,12,9,'#fff','right');
-  if(resT>0){txt(res,W/2,H*.42,res.length>11?13:16,resCol);if(resSub)txt(resSub,W/2,H*.42+14,9,'#fff')}
-  if(!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
-  else txt(camLive()?'SWING AS THE BALL ARRIVES - HARDER = FARTHER':'PRESS OK AS THE BALL ARRIVES',W/2,H-12,7,'#d8d8f0');
-  {const mw=70,fr=clamp(spd/(FORCE*1.6),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.fillRect(6+mw/1.6,H-12,1,7);txt('ARM',6,H-13,6,'#cfd8ff','left')}}
- else if(scene==='title'){
-  txt('FASTBALL',W/2,44,26,'#ffd860');
-  txt('YOUR BAT (OR HAND) IS THE BAT. THE PHONE CAMERA WATCHES YOU.',W/2,66,7,'#fff');
-  txt(camLive()?'SWING AS THE BALL ARRIVES. HARDER SWING = FARTHER HIT.':'MOVE YOUR HAND TO THE BALL, PRESS OK WHEN IT SLOWS DOWN',W/2,78,7,'#fff');
-  txt(camLive()?'SWING YOUR ARM TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
-  txt(DEBUG?'DEBUG: MOUSE = HAND, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
- else if(scene==='cal'){
-  txt('WARM UP',W/2,34,18,'#ffd860');
-  if(cal.done)txt('READY - FIRST PITCH COMING',W/2,70,9,'#7dff7d');
-  else{txt('SWING YOUR BAT 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
-   txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
-   if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
-   if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
- else{
-  txt('FINAL SCORE '+score,W/2,56,16,'#ffd860');txt('HITS '+hits+' / '+NP+(best?'   LONGEST '+best+' FT':''),W/2,78,11,'#fff');
-  if(endT>1.2)txt(camLive()?'SWING YOUR ARM TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
+  bg();
+  const playing=scene==='play'&&P;
+  if(playing){
+   if(P.state==='fast'||P.state==='slow')streak();
+   if(P.state!=='wind')ball(ballPos(P),P.state==='pass'?Math.max(0,1-P.t/.6):1);
+   if(P.state==='slow'){g.fillStyle='rgba(40,90,190,.18)';g.fillRect(0,0,W,H);g.fillStyle='#000';g.fillRect(0,0,W,8);g.fillRect(0,H-8,W,8)}}
+  if(scene!=='title')drawHand();
+  if(scene!=='play'){g.fillStyle=scene==='title'?'rgba(0,0,0,.55)':'rgba(0,0,0,.6)';g.fillRect(0,0,W,H)}
+  present(); // bend + posterize onto the screen, then draw crisp text on top
+  if(playing&&P.state==='slow'&&Math.floor(clock*3)%2)txt('SLOW',W/2,H-2.5,7,'#8fd0ff');
+  if(playing&&P.state==='wind')txt('PITCH INCOMING',W/2,28,9,'#ffd860');
+  if(scene==='play'){
+   txt('PITCH '+Math.min(pitchN+1,NP)+'/'+NP,6,12,9,'#fff','left');txt('SCORE '+score,W-6,12,9,'#fff','right');
+   if(resT>0){txt(res,W/2,H*.42,res.length>11?13:16,resCol);if(resSub)txt(resSub,W/2,H*.42+14,9,'#fff')}
+   if(!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
+   else txt(camLive()?'SWING AS THE BALL ARRIVES - HARDER = FARTHER':'PRESS OK AS THE BALL ARRIVES',W/2,H-12,7,'#d8d8f0');
+   {const mw=70,fr=clamp(spd/(FORCE*1.6),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.font='bold 7px monospace';cg.textAlign='left';cg.fillText('POWER',7,H-14)}}
+  else if(scene==='title'){
+   txt('FASTBALL',W/2,44,26,'#ffd860');
+   txt('YOUR BAT (OR HAND) IS THE BAT. THE PHONE CAMERA WATCHES YOU.',W/2,66,7,'#fff');
+   txt(camLive()?'SWING AS THE BALL ARRIVES. HARDER SWING = FARTHER HIT.':'MOVE YOUR HAND TO THE BALL, PRESS OK WHEN IT SLOWS DOWN',W/2,78,7,'#fff');
+   txt(camLive()?'SWING YOUR ARM TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
+   txt(DEBUG?'DEBUG: MOUSE = HAND, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
+  else if(scene==='cal'){
+   txt('WARM UP',W/2,34,18,'#ffd860');
+   if(cal.done)txt('READY - FIRST PITCH COMING',W/2,70,9,'#7dff7d');
+   else{txt('SWING YOUR BAT 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
+    txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
+    if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
+    if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
+  else{
+   txt('FINAL SCORE '+score,W/2,56,16,'#ffd860');txt('HITS '+hits+' / '+NP+(best?'   LONGEST '+best+' FT':''),W/2,78,11,'#fff');
+   if(endT>1.2)txt(camLive()?'SWING YOUR ARM TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
 // ---- input ----
 const FIRE_KC=[13,23,32,96,103,105];
 addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
 if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H);hand.t=0};
  addEventListener('mousemove',m);addEventListener('mousedown',e=>{m(e);press()})}
-let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
+let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d)press('pad');}}}catch(e){}}
 // ---- loop ----
 let last=performance.now();
 function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
