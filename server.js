@@ -8,7 +8,7 @@ const server = http.createServer((req, res) => {
     return res.end(fs.readFileSync(path.join(__dirname, 'public', 'tv.html')));
   }
   const p = req.url.split('?')[0];
-  if (p === '/version') { res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('server v3 tracker-route'); }
+  if (p === '/version') { res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('server v4 nocache'); }
   if (p === '/tracker') { res.writeHead(302, { Location: '/tracker/' + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '') }); return res.end(); }
   if (p.startsWith('/tracker/')) { // the phone tracker app. Looks in public/tracker/ first, then in public/ itself (in case the files were uploaded loose).
     const pub = path.join(__dirname, 'public');
@@ -22,11 +22,11 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(404); return res.end('not found');
   }
-  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/golf': 'golf.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
+  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/golf': 'golf.html', '/brawl': 'brawl.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
   if (pages[p]) {
     try {
       const f = fs.readFileSync(path.join(__dirname, 'public', pages[p]));
-      res.writeHead(200, { 'Content-Type': p.endsWith('.js') ? 'application/javascript' : 'text/html' });
+      res.writeHead(200, { 'Content-Type': p.endsWith('.js') ? 'application/javascript' : 'text/html', 'Cache-Control': 'no-store, max-age=0' }); // never let a TV browser keep an old copy of a game page
       return res.end(f);
     } catch (e) { res.writeHead(404); return res.end('test page not uploaded'); }
   }
