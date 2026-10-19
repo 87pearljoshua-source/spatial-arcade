@@ -8,6 +8,7 @@ const server = http.createServer((req, res) => {
     return res.end(fs.readFileSync(path.join(__dirname, 'public', 'tv.html')));
   }
   const p = req.url.split('?')[0];
+  if (p === '/version') { res.writeHead(200, {'Content-Type':'text/plain'}); return res.end('server v3 tracker-route'); }
   if (p === '/tracker') { res.writeHead(302, { Location: '/tracker/' + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '') }); return res.end(); }
   if (p.startsWith('/tracker/')) { // the phone tracker app. Looks in public/tracker/ first, then in public/ itself (in case the files were uploaded loose).
     const pub = path.join(__dirname, 'public');
@@ -21,7 +22,7 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(404); return res.end('not found');
   }
-  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
+  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/golf': 'golf.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
   if (pages[p]) {
     try {
       const f = fs.readFileSync(path.join(__dirname, 'public', pages[p]));
