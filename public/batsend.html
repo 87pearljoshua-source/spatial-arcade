@@ -17,7 +17,8 @@ function setup(){SH=Math.round(SW*v.videoHeight/v.videoWidth)||120;sc.width=SW;s
  m=new Uint8Array(SW*SH);m2=new Uint8Array(SW*SH);seen=new Uint8Array(SW*SH);stack=new Int32Array(SW*SH)}
 function connect(){const room=$('room').value.trim().toUpperCase()||'ABCD';
  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=phone');
- ws.onclose=()=>{if(run)setTimeout(connect,1500)}}
+ ws.onclose=()=>{if(run)setTimeout(connect,1500)};
+ ws.onmessage=e=>{try{const mm=JSON.parse(e.data);if(mm.type==='scan')startScan()}catch(x){}}}
 function hsv(r,gg,b){const mx=Math.max(r,gg,b),mn=Math.min(r,gg,b),dl=mx-mn;let h=0;if(dl){if(mx===r)h=60*((gg-b)/dl);else if(mx===gg)h=60*(2+(b-r)/dl);else h=60*(4+(r-gg)/dl);if(h<0)h+=360}return{h,s:mx?dl/mx:0,v:mx/255}}
 function threshold(d){const n=SW*SH,v255=VMIN*255;
  for(let i=0,j=0;i<n;i++,j+=4){const r=d[j],gg=d[j+1],b=d[j+2];const mx=r>gg?(r>b?r:b):(gg>b?gg:b);
@@ -33,6 +34,44 @@ function blob(){seen.fill(0);let best=null;const w=SW,h=SH,n=w*h;
    if(y>0&&m2[p-w]&&!seen[p-w]){seen[p-w]=1;stack[sp++]=p-w}if(y<h-1&&m2[p+w]&&!seen[p+w]){seen[p+w]=1;stack[sp++]=p+w}}
   if(!best||a>best.a)best={a,x:(sx/a+.5)/w,y:(sy/a+.5)/h}}
  return best}
+/*FEAT*/
+// Measure the shape of the biggest colored blob: length vs width, how the width changes along its length, how bent it is, and whether there are 2+ separate pieces.
+function shapeFeatures(m,w,h){
+ const n=w*h,seen=new Uint8Array(n),stack=new Int32Array(n),comps=[];
+ for(let s=0;s<n;s++){if(!m[s]||seen[s])continue;let sp=0;stack[sp++]=s;seen[s]=1;const px=[];
+  while(sp){const p=stack[--sp];px.push(p);const x=p%w,y=(p/w)|0;
+   if(x>0&&m[p-1]&&!seen[p-1]){seen[p-1]=1;stack[sp++]=p-1}if(x<w-1&&m[p+1]&&!seen[p+1]){seen[p+1]=1;stack[sp++]=p+1}
+   if(y>0&&m[p-w]&&!seen[p-w]){seen[p-w]=1;stack[sp++]=p-w}if(y<h-1&&m[p+w]&&!seen[p+w]){seen[p+w]=1;stack[sp++]=p+w}}
+  comps.push(px)}
+ if(!comps.length)return null;comps.sort((a,b)=>b.length-a.length);const L=comps[0];if(L.length<40)return null;
+ const blobs=comps.filter(c=>c.length>=Math.max(20,.5*L.length)).length;
+ let mx=0,my=0;for(const p of L){mx+=p%w;my+=(p/w)|0}mx/=L.length;my/=L.length;
+ let sxx=0,sxy=0,syy=0;for(const p of L){const dx=p%w-mx,dy=((p/w)|0)-my;sxx+=dx*dx;sxy+=dx*dy;syy+=dy*dy}
+ const th=.5*Math.atan2(2*sxy,sxx-syy),ux=Math.cos(th),uy=Math.sin(th),vx=-uy,vy=ux;
+ let tmin=1e9,tmax=-1e9;const T=new Float32Array(L.length),S=new Float32Array(L.length);
+ L.forEach((p,i)=>{const dx=p%w-mx,dy=((p/w)|0)-my;T[i]=dx*ux+dy*uy;S[i]=dx*vx+dy*vy;if(T[i]<tmin)tmin=T[i];if(T[i]>tmax)tmax=T[i]});
+ const len=tmax-tmin+1,K=8,smin=new Float32Array(K).fill(1e9),smax=new Float32Array(K).fill(-1e9);
+ for(let i=0;i<L.length;i++){let b=Math.floor((T[i]-tmin)/len*K);if(b>=K)b=K-1;if(S[i]<smin[b])smin[b]=S[i];if(S[i]>smax[b])smax[b]=S[i]}
+ let wd=[],ct=[];for(let k=0;k<K;k++){if(smax[k]<smin[k]){wd.push(0);ct.push(null)}else{wd.push(smax[k]-smin[k]+1);ct.push((smax[k]+smin[k])/2)}}
+ const ok=wd.filter(x=>x>0),meanW=ok.reduce((a,b)=>a+b,0)/ok.length;
+ let prof=wd.map(x=>x/meanW);
+ if(prof[0]+prof[1]+prof[2]+prof[3]>prof[4]+prof[5]+prof[6]+prof[7]){prof=prof.reverse();ct=ct.reverse()} // thicker end last
+ const ks=[],cs=[];ct.forEach((c,k)=>{if(c!==null){ks.push(k);cs.push(c)}});
+ let dev=0;if(ks.length>=3){const mk=ks.reduce((a,b)=>a+b,0)/ks.length,mc=cs.reduce((a,b)=>a+b,0)/cs.length;let num=0,den=0;ks.forEach((k,i)=>{num+=(k-mk)*(cs[i]-mc);den+=(k-mk)*(k-mk)});const sl=num/den;ks.forEach((k,i)=>{dev=Math.max(dev,Math.abs(cs[i]-mc-sl*(k-mk)))})}
+ let perim=0;for(const p of L){const x=p%w,y=(p/w)|0;if(x===0||y===0||x===w-1||y===h-1||!m[p-1]||!m[p+1]||!m[p-w]||!m[p+w])perim++}
+ const arc=perim*perim/(4*L.length),tort=(perim/2)/len; // arc = elongation that still works when the object is curved
+ return{len:len/w,ar:len/meanW,arc:+arc.toFixed(2),tort:+tort.toFixed(3),prof:prof.map(x=>+x.toFixed(3)),dev:+(dev/len).toFixed(4),blobs,fill:L.length/(len*meanW),wpx:meanW}}
+/*ENDFEAT*/
+
+// ---- weapon scan: the TV asks, the phone watches the object for ~2.5 s and sends back its shape numbers ----
+const scan={on:false,end:0,n:0,f:[],loose:false};
+function startScan(){if(!run||scan.on)return;scan.on=true;scan.loose=true;scan.f=[];scan.n=0;scan.end=performance.now()+2500;say('SCANNING: hold the object still, fully in view. If nothing lights up cyan, tap the object on this screen.',3200)}
+function finishScan(){scan.on=false;const F=scan.f;
+ if(F.length<4){ws&&ws.readyState===1&&ws.send(JSON.stringify({type:'shape',none:1}));say('Scan saw nothing. Tap the object on the screen (so it lights up cyan), then scan again from the TV.',6000);return}
+ const med=a=>{a=a.slice().sort((x,y)=>x-y);return a[a.length>>1]},out={type:'shape'};
+ for(const k of['len','ar','arc','tort','dev','blobs','fill','wpx'])out[k]=+med(F.map(f=>f[k])).toFixed(4);
+ out.prof=F[0].prof.map((_,i)=>+med(F.map(f=>f.prof[i])).toFixed(3));
+ ws&&ws.readyState===1&&ws.send(JSON.stringify(out));say('Scan sent ('+F.length+' frames). Pick the weapon on the TV.',5000)}
 // same speed measure the TV uses (camera-widths per second over ~70-170 ms) so the number here matches the game
 let samples=[],spd=0,peak=0,peakT=0;
 function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
@@ -41,6 +80,7 @@ function loop(){if(!run)return;
  sg.drawImage(v,0,0,SW,SH);lastData=sg.getImageData(0,0,SW,SH);threshold(lastData.data);
  const bl=blob(),now=performance.now();frames++;fpsN++;if(now-fpsT>1000){fps=fpsN*1000/(now-fpsT);fpsN=0;fpsT=now}
  const seenBat=bl&&bl.a>=14;
+ if(scan.on){scan.n++;if(scan.n%2===0){const f=shapeFeatures(m2,SW,SH);if(f)scan.f.push(f)}if(now>scan.end)finishScan()}
  // overlay: the pixels the phone thinks are the bat, in cyan, then a crosshair on the center
  g.clearRect(0,0,c.width,c.height);
  const id=mg.createImageData(SW,SH),od=id.data;for(let i=0;i<SW*SH;i++)if(m2[i]){od[i*4]=0;od[i*4+1]=255;od[i*4+2]=255;od[i*4+3]=150}
@@ -57,8 +97,8 @@ $('w').addEventListener('click',e=>{if(!run||!lastData)return;const r=$('w').get
  for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const x=cx+dx,y=cy+dy;if(x<0||y<0||x>=SW||y>=SH)continue;const j=(y*SW+x)*4,d=lastData.data,q=hsv(d[j],d[j+1],d[j+2]);hs.push(q.h);ss.push(q.s);vs.push(q.v)}
  if(!hs.length)return;hs.sort((a,b)=>a-b);const med=a=>a[a.length>>1],mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
  const h=med(hs),s=mean(ss),vv=mean(vs);
- if(s<.5){say('That spot is too pale ('+s.toFixed(2)+') - it could be skin or a wall. Tap the brightest orange part of the bat. If the bat looks washed out, turn on more room light.');return}
- H0=h;SMIN=Math.max(.5,s-.28);VMIN=Math.max(.2,vv-.35);picked=true;say('Learned color: hue '+h.toFixed(0)+', saturation '+s.toFixed(2)+', brightness '+vv.toFixed(2)+'. Cyan = what it thinks is the bat.')});
+ if(s<(scan.loose?.28:.5)){say('That spot is too pale ('+s.toFixed(2)+') - it could be skin or a wall. Tap the brightest orange part of the bat. If the bat looks washed out, turn on more room light.');return}
+ H0=h;SMIN=Math.max(scan.loose?.25:.5,s-.28);VMIN=Math.max(.2,vv-.35);picked=true;say('Learned color: hue '+h.toFixed(0)+', saturation '+s.toFixed(2)+', brightness '+vv.toFixed(2)+'. Cyan = what it thinks is the object.'+(s<.5?' WARNING: this color is pale, so it may be confused with skin. If tracking jumps, wrap the object in bright tape.':''))});
 // try to shorten the shutter so a fast swing blurs less. Many phones will refuse; that is fine.
 $('fs').onclick=async()=>{try{if(!stream){say('Tap START CAMERA first.');return}const t=stream.getVideoTracks()[0],cap=t.getCapabilities?t.getCapabilities():{};
  if(fastOn){await t.applyConstraints({advanced:[{exposureMode:'continuous'}]});fastOn=false;$('fs').textContent='FAST SHUTTER (try)';say('Back to automatic exposure.');return}
@@ -81,5 +121,5 @@ $('go').onclick=async()=>{try{
  log('2/3 Camera on ('+v.videoWidth+'x'+v.videoHeight+' at '+(st.frameRate||'?')+' fps requested). Connecting to the TV relay...');
  run=true;frames=0;t0=performance.now();fpsT=t0;connect();loop();$('go').textContent='RUNNING (tap to restart)';
  }catch(e){log('ERROR: '+e.message)}};
-window.__bat=()=>({H0,HT,SMIN,VMIN,picked,fps,spd,peak,wsOpen:!!(ws&&ws.readyState===1)});
+window.__feat=shapeFeatures;window.__bat=()=>({H0,HT,SMIN,VMIN,picked,fps,spd,peak,wsOpen:!!(ws&&ws.readyState===1)});
 </script></body></html>
