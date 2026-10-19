@@ -1,0 +1,168 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Driving Range</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
+canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
+<canvas id="c" width="256" height="144"></canvas>
+<script src="/qr.js"></script>
+<script>
+// DRIVING RANGE - first-person golf demo. Any swing hits the ball; swing speed sets the distance. The phone camera follows your hand (posesend.html) or a bright orange bat (batsend.html); a real swing hits. Before the first pitch you swing 3 times to calibrate.
+const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
+let FORCE=+qp.get('force')||1.2;const OKSWING=qp.has('okswing'),NOCAL=qp.has('nocal')||qp.has('force')||DEBUG; // arm speed (camera-widths/s) that counts as a swing; ?okswing lets OK swing too
+const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8; // hand gain (tune if your reach feels too small/large)
+const W=256,H=144,HZ=52,VPX=128,NP=5,TEE={x:128,y:124};
+const c=document.getElementById('c'),cg=c.getContext('2d');
+const bufc=document.createElement('canvas');bufc.width=256;bufc.height=144;
+const g=bufc.getContext('2d',{willReadFrequently:true});g.imageSmoothingEnabled=false; // scene is drawn here, then bent + posterized onto the screen canvas
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+// ---- fisheye + PS1-style color (precomputed once) ----
+const FK=.5,MAP=new Int32Array(W*H),VG=new Uint16Array(W*H),BAY=[-4,0,-3,1,2,-2,3,-1,-3,1,-4,0,4,-1,2,-2];
+for(let y=0;y<H;y++)for(let x=0;x<W;x++){const px=(x+.5)/W*2-1,py=(y+.5)/H*2-1,r2=px*px+py*py,f=(1+FK*r2)/(1+FK);
+ const sx=Math.floor((px*f+1)/2*W),sy=Math.floor((py*f+1)/2*H),i=y*W+x;
+ MAP[i]=(sx<0||sx>=W||sy<0||sy>=H)?-1:sy*W+sx;VG[i]=Math.max(40,Math.round(256*(1-.42*(r2/2)*(r2/2)*2)))}
+function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.buffer),od=cg.createImageData(W,H),out=new Uint32Array(od.data.buffer);
+ for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0){out[i]=0xFF000000;continue}
+  const p=src[s],v=VG[i],d=BAY[(i&3)|(((i>>8)&3)<<2)];
+  let r=((p&255)*v>>8)+d,gg=(((p>>8)&255)*v>>8)+d,b=(((p>>16)&255)*v>>8)+d;
+  r=r<0?0:r>255?255:r;gg=gg<0?0:gg>255?255:gg;b=b<0?0:b>255?255:b;r&=0xF8;gg&=0xF8;b&=0xF8;r|=r>>5;gg|=gg>>5;b|=b>>5;
+  out[i]=0xFF000000|(b<<16)|(gg<<8)|r}
+ cg.putImageData(od,0,0)}
+// screen pixel -> scene pixel (so a mouse lines up with what you see)
+const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
+// scene pixel -> screen pixel (test hook only)
+const toScreen=(sx,sy)=>{let best=null,bd=1e9;for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0)continue;const d=Math.abs(s%W-sx)+Math.abs(((s/W)|0)-sy);if(d<bd){bd=d;best=i;if(d===0)break}}return{x:best%W+.5,y:((best/W)|0)+.5}};
+let samples=[],spd=0,cool=0;let hand={x:.5,y:.6,t:0},sm={x:.5,y:.6},dbg=null;
+// ---- network ----
+let ws=null;
+function conn(){try{ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws?room='+room+'&role=tv');
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
+  if(m.type==='peer_joined')phoneUp=true;else if(m.type==='peer_left')phoneUp=false;
+  else if(m.type==='pose'){phoneUp=true;if(m.v>.4){const n=performance.now();hand.x=m.x;hand.y=m.y;hand.t=n;samples.push({t:n,x:m.x,y:m.y});while(samples.length&&n-samples[0].t>600)samples.shift()}}
+  else if(m.type==='fire_down')press()};
+ ws.onclose=()=>{phoneUp=false;setTimeout(conn,1500)};ws.onerror=()=>{try{ws.close()}catch(e){}}}catch(e){setTimeout(conn,3000)}}
+conn();
+// ---- game ----
+const handPx=()=>dbg&&performance.now()-hand.t>1500?dbg:{x:W*clamp(.5+(sm.x-.5)*GX,.02,.98),y:H*clamp(.5+(sm.y-.6)*GY,.08,.95)};
+const camLive=()=>performance.now()-hand.t<1500;
+function armSpeed(now){if(samples.length<2)return 0;const b=samples[samples.length-1];if(now-b.t>130)return 0;
+ let a=null;for(const s of samples){if(now-s.t<=170&&b.t-s.t>=70){a=s;break}}if(!a)return 0;
+ return Math.hypot(b.x-a.x,b.y-a.y)/((b.t-a.t)/1000)}
+function startOrCal(){if(camLive()&&!cal.done){scene='cal';cal.n=0;cal.cp=0;cal.peaks=[];cal.t=0;cal.last=0;cal.hold=0}else startGame()}
+function calFinish(){const q=cal.peaks.slice().sort((x,y)=>x-y),a=q[q.length>>1];FORCE=clamp(.6*a,.8,6);cal.done=true;cal.t=-1.4}
+
+// ---- golf ----
+let cal={n:0,cp:0,peaks:[],t:0,done:NOCAL,last:0,hold:0},scene='title',shotN=0,total=0,best=0,P=null,gap=0,swing=0,res='',resSub='',resCol='#7dff7d',resT=0,endT=0,phoneUp=false,clock=0,marks=[];
+const stars=Array.from({length:40},(_,i)=>({x:(i*97)%W,y:(i*53)%(HZ-6),b:i%3}));
+const MAXD=400,yg=gd=>HZ+(TEE.y+2-HZ)*Math.pow(1-clamp(gd/MAXD,0,.985),2); // ground distance (yards) -> screen y
+function startGame(){scene='play';shotN=0;total=0;best=0;P=null;gap=.6;res='';marks=[]}
+function newShot(){P={t:0,state:'ready',pend:0,pk:0,D:0,lat:0,pw:0,T:1}}
+function startOrCalG(){startOrCal()}
+function press(src){
+ if(scene==='title'){startOrCal();return}
+ if(scene==='cal'){if(src!=='arm'){cal.done=true;startGame()}return}
+ if(scene==='end'){if(endT>1.2)startOrCal();return}
+ if(src!=='arm'&&camLive())return; // camera on: only a real swing counts
+ if(!P||P.state!=='ready'||P.t<.5)return;
+ swing=.3;P.state='swing';P.pend=.18;P.pk=Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9))}
+// A swing ALWAYS makes contact. Peak swing speed picks the distance; the sideways drift is random.
+function launch(){
+ const pw=clamp(P.pk/(FORCE*2.2),.1,1),D=Math.round((60+pw*270)*(.96+Math.random()*.08));
+ P.pw=pw;P.D=D;P.lat=(Math.random()-.5)*2*34;P.T=1.3+D/190;P.state='fly';P.t=0}
+function ballG(){ // current ball position + size
+ if(!P||P.state==='ready'||P.state==='swing')return{x:TEE.x,y:TEE.y,r:5};
+ const u=P.state==='rest'?1:clamp(P.t/P.T,0,1),gd=P.D*(u+(P.state==='rest'?.07:0)),y0=yg(gd),h=(14+P.pw*46)*4*u*(1-u);
+ const k=(y0-HZ)/(TEE.y+2-HZ);
+ return{x:TEE.x+P.lat*(.25+.75*u)*(.25+k),y:y0-h,r:Math.max(1,.8+4.4*k*k),gx:TEE.x+P.lat*(.25+.75*u)*(.25+k),gy:y0}}
+function tag(pw){return pw<.35?['WEAK','#ffb060']:pw<.6?['SOLID','#cfe8ff']:pw<.85?['CRUSHED','#7dff7d']:['BOMB!','#ffd860']}
+function update(dt){clock+=dt;const nw=performance.now();spd=Math.max(armSpeed(nw),spd*Math.pow(.02,dt));if(cool>0)cool-=dt;
+ if(camLive()&&spd>=FORCE&&cool<=0&&(scene==='title'||scene==='end'||(scene==='play'&&P&&P.state==='ready'&&P.t>=.5))){cool=.6;press('arm')}
+if(scene==='cal'){cal.t+=dt;
+  if(cal.done){if(cal.t>=0)startGame()}
+  else if(cal.hold>0){cal.hold-=dt;cal.cp=0}
+  else if(cal.t>1.2&&camLive()){const sp=Math.min(spd,10);if(sp>cal.cp)cal.cp=sp;
+   if(cal.cp>=.7&&sp<.35*cal.cp){const best=cal.peaks.length?Math.max(...cal.peaks):0;cal.hold=.9;
+    if(cal.cp>=.35*best){cal.peaks.push(cal.cp);cal.last=cal.cp;cal.n++;if(cal.n>=3)calFinish()}
+    cal.cp=0}}}
+ 
+ sm.x+=(hand.x-sm.x)*.5;sm.y+=(hand.y-sm.y)*.5;
+ if(swing>0)swing-=dt;if(resT>0)resT-=dt;if(scene==='end')endT+=dt;
+ if(scene!=='play')return;
+ if(!P){gap-=dt;if(gap<=0)newShot();return}
+ P.t+=dt;
+ if(P.state==='swing'){P.pk=Math.max(P.pk,spd);P.pend-=dt;if(P.pend<=0)launch()}
+ else if(P.state==='fly'&&P.t>=P.T){P.state='rest';P.t=0;total+=P.D;if(P.D>best)best=P.D;const tg=tag(P.pw),b=ballG();marks.push({x:b.gx,y:b.gy,D:P.D});
+  res=P.D+' YDS';resSub=tg[0];resCol=tg[1];resT=2.2}
+ else if(P.state==='rest'&&P.t>=1.9){shotN++;P=null;if(shotN>=NP){scene='end';endT=0}else gap=.5}}
+// ---- drawing ----
+function txt(s,x,y,sz,col,al){const g=cg;g.font='bold '+sz+'px monospace';g.textAlign=al||'center';g.fillStyle='#000';g.fillText(s,x+1,y+1);g.fillStyle=col;g.fillText(s,x,y)}
+function poly(pts,col){g.fillStyle=col;g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p[0],p[1]):g.moveTo(p[0],p[1]));g.closePath();g.fill()}
+const MTN=Array.from({length:35},(_,i)=>Math.round(3+5*Math.abs(Math.sin(i*.9))+4*Math.abs(Math.sin(i*.37+1))+(i%5==2?4:0)));
+
+function bg(){
+ const sky=['#2a5fa8','#3b78c0','#5290d0','#6aa8dc','#86bee6','#a6d2ec','#c4e2f0','#e0f0f0'];
+ sky.forEach((cl,i)=>{g.fillStyle=cl;g.fillRect(0,i*HZ/8,W,HZ/8+1)});
+ g.fillStyle='rgba(255,255,255,.35)';[[30,14,18],[110,9,24],[190,17,20]].forEach(c=>{g.fillRect(c[0],c[1],c[2],3);g.fillRect(c[0]+4,c[1]-2,c[2]-8,2)});
+ g.fillStyle='#4a7a8a';g.beginPath();g.moveTo(0,HZ);MTN.forEach((h,i)=>g.lineTo(i*8,HZ-h*.55));g.lineTo(W,HZ);g.closePath();g.fill();
+ g.fillStyle='#2a5a2a';for(let x=0;x<W;x+=5){const h=3+((x*37)%5);g.fillRect(x,HZ-h,5,h)} // far tree line
+ for(let i=0;i<16;i++){const a=HZ+Math.pow(i/16,1.7)*(H-HZ),b=HZ+Math.pow((i+1)/16,1.7)*(H-HZ);g.fillStyle=i%2?'#3f9a3a':'#37882f';g.fillRect(0,a,W,b-a+1)}
+ g.fillStyle='rgba(255,255,255,.25)';g.fillRect(0,HZ,W,1);
+ g.strokeStyle='rgba(255,255,255,.12)';g.lineWidth=1;g.beginPath();for(let i=-6;i<=6;i++){g.moveTo(VPX+i*8,HZ);g.lineTo(VPX+i*70,H)}g.stroke();
+ [100,200,300].forEach(d=>{const y=yg(d),w=40+160*((y-HZ)/(TEE.y-HZ));g.fillStyle='rgba(255,255,255,.55)';g.fillRect(VPX-w/2,Math.round(y),w,1);
+  g.fillStyle='#fff';g.font='bold 6px monospace';g.textAlign='center';g.fillText(d,VPX-w/2-8,Math.round(y)+2);g.fillText(d,VPX+w/2+8,Math.round(y)+2);
+  g.fillStyle='#fff';g.fillRect(VPX+w/2+16,Math.round(y)-6,1,7);g.fillStyle='#e03030';g.fillRect(VPX+w/2+17,Math.round(y)-6,4,3)});
+ marks.forEach(m=>{g.fillStyle='rgba(255,255,255,.9)';g.fillRect(Math.round(m.x)-1,Math.round(m.y),3,1);g.fillStyle='#fff';g.fillRect(Math.round(m.x),Math.round(m.y)-1,1,1)}); // where earlier drives landed
+ g.fillStyle='#9ec080';g.beginPath();g.ellipse(TEE.x,TEE.y+4,24,7,0,0,7);g.fill();g.fillStyle='#b4d494';g.beginPath();g.ellipse(TEE.x,TEE.y+3,19,5,0,0,7);g.fill()} // tee box
+function ballShape(b){const r=b.r;
+ if(r<2.2){g.fillStyle='#fff';const d=Math.max(1,Math.round(r*2));g.fillRect(Math.round(b.x-d/2),Math.round(b.y-d/2),d,d);return}
+ g.fillStyle='rgba(0,0,0,.25)';g.beginPath();g.ellipse(b.x,(b.gy!==undefined?b.gy:b.y)+r*.9,r*1.1,r*.4,0,0,7);g.fill();
+ g.fillStyle='#d8d8d8';g.beginPath();g.arc(b.x,b.y,r+.6,0,7);g.fill();g.fillStyle='#fff';g.beginPath();g.arc(b.x-r*.1,b.y-r*.1,r,0,7);g.fill();
+ g.fillStyle='#e6e6e6';g.fillRect(b.x-r*.4,b.y-r*.1,1,1);g.fillRect(b.x+r*.2,b.y+r*.3,1,1)}
+function arm(x0,y0,x1,y1,col){const dx=x1-x0,dy=y1-y0,l=Math.hypot(dx,dy)||1,nx=-dy/l,ny=dx/l;poly([[x0+nx*9,y0+ny*9],[x1+nx*4.5,y1+ny*4.5],[x1-nx*4.5,y1-ny*4.5],[x0-nx*9,y0-ny*9]],col)}
+function fist(x,y){g.fillStyle='#d9a066';g.fillRect(x-5,y-4,10,8);g.fillStyle='#a8743c';g.fillRect(x-5,y+1,10,3);g.fillStyle='#8a5a2c';g.fillRect(x-1,y-4,1,6);g.fillRect(x+2,y-4,1,6)}
+
+function drawClub(){const h=handPx(),sp=swing>0?(1-swing/.3):0;
+ const a=swing>0?-2.4+sp*2.4:-2.4,L=44,ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux,tx=h.x+ux*L,ty=h.y+uy*L;
+ poly([[h.x+nx*.8,h.y+ny*.8],[tx+nx*.8,ty+ny*.8],[tx-nx*.8,ty-ny*.8],[h.x-nx*.8,h.y-ny*.8]],'#b8b8c0');
+ poly([[tx+nx*4,ty+ny*4+1],[tx+ux*8+nx*4,ty+uy*8+ny*4],[tx+ux*8-nx*5,ty+uy*8-ny*5],[tx-nx*5,ty-ny*5]],'#303038'); // driver head
+ const f2={x:h.x+ux*9,y:h.y+uy*9};
+ arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
+ fist(f2.x,f2.y);fist(h.x,h.y)}
+function draw(){
+ bg();
+ const playing=scene==='play'&&P;
+ if(playing){const b=ballG();ballShape(b)}
+ if(scene!=='title')drawClub();
+ if(scene!=='play'){g.fillStyle=scene==='title'?'rgba(0,0,0,.5)':'rgba(0,0,0,.55)';g.fillRect(0,0,W,H)}
+ present();
+ if(scene==='play'){
+  txt('BALL '+Math.min(shotN+1,NP)+'/'+NP,6,12,9,'#fff','left');txt('TOTAL '+total+' YDS',W-6,12,9,'#fff','right');
+  if(resT>0){txt(res,W/2,H*.38,18,resCol);txt(resSub,W/2,H*.38+14,10,'#fff')}
+  else if(playing&&P.state==='ready'&&!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
+  else if(playing&&P.state==='ready')txt(camLive()?'SWING THROUGH THE BALL  -  FASTER SWING = FARTHER':'PRESS OK TO SWING',W/2,H-12,7,'#fff');
+  {const mw=70,fr=clamp(spd/(FORCE*2.2),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.fillRect(6+mw*FORCE/(FORCE*2.2),H-12,1,7);txt('SPEED',6,H-13,6,'#fff','left')}}
+ else if(scene==='title'){
+  txt('DRIVING RANGE',W/2,44,22,'#ffd860');
+  txt('YOUR CLUB (BAT, STICK OR HAND) IS TRACKED BY THE PHONE CAMERA.',W/2,66,7,'#fff');
+  txt(camLive()?'EVERY SWING HITS THE BALL. FASTER SWING = FARTHER DRIVE.':'PRESS OK TO SWING. EVERY SWING HITS.',W/2,78,7,'#fff');
+  txt(camLive()?'SWING TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
+  txt(DEBUG?'DEBUG: CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
+ else if(scene==='cal'){
+  txt('WARM UP',W/2,34,18,'#ffd860');
+  if(cal.done)txt('READY - TEE IT UP',W/2,70,9,'#7dff7d');
+  else{txt('SWING YOUR CLUB 3 TIMES LIKE YOU MEAN IT',W/2,58,8,'#fff');txt('SWING '+Math.min(cal.n+1,3)+' OF 3',W/2,78,12,'#fff');
+   txt('SPEED '+spd.toFixed(1),W/2,96,8,'#8fd0ff');if(cal.last)txt('LAST '+cal.last.toFixed(1),W/2,106,7,'#cfd8ff');
+   if(cal.t>0&&cal.t<1.2)txt('GET READY...',W/2,112,8,'#ffb060');
+   if(!camLive())txt('STEP INTO VIEW OF THE PHONE (OR PRESS OK TO SKIP)',W/2,126,7,'#ffb060')}}
+ else{
+  txt('TOTAL '+total+' YDS',W/2,56,16,'#ffd860');txt('LONGEST DRIVE '+best+' YDS',W/2,78,10,'#fff');
+  if(endT>1.2)txt(camLive()?'SWING TO PLAY AGAIN':'PRESS OK TO PLAY AGAIN',W/2,108,9,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a')}}
+// ---- input ----
+const FIRE_KC=[13,23,32,96,103,105];
+addEventListener('keydown',e=>{if(e.repeat)return;if(FIRE_KC.includes(e.keyCode)||e.key==='Enter'||e.key===' ')press()});
+if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H);hand.t=0};
+ addEventListener('mousemove',m);addEventListener('mousedown',e=>{m(e);press()})}
+let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
+// ---- loop ----
+let last=performance.now();
+function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+window.__disp=toScreen;window.__fb=()=>({FORCE,cal:{n:cal.n,done:cal.done,peaks:cal.peaks},scene,shotN,total,best,res,resSub,phoneUp,P:P&&{state:P.state,D:P.D,pw:P.pw}});
+</script></body></html>
