@@ -1,7 +1,7 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>window.onerror=function(m,u,l,c){var b=document.getElementById('boot');if(b){b.style.color='#ff8080';b.textContent='ERROR: '+m+'  (line '+l+')  - send me a photo of this screen'}};</script><title>Bat Alley</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>window.onerror=function(m,u,l,c){var b=document.getElementById('boot');if(b){b.style.color='#ff8080';b.textContent='ERROR: '+m+'  (line '+l+')  - send me a photo of this screen'}};</script><title>Boulevard of Brawl</title>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
 canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
-<div id="boot" style="position:fixed;left:0;top:0;right:0;color:#fff;font:bold 22px monospace;padding:16px;z-index:9;white-space:pre-wrap">BAT ALLEY v2 - loading...</div>
+<div id="boot" style="position:fixed;left:0;top:0;right:0;color:#fff;font:bold 22px monospace;padding:16px;z-index:9;white-space:pre-wrap">BOULEVARD OF BRAWL v3 - loading...</div>
 <canvas id="c" width="256" height="144"></canvas>
 <script src="/qr.js"></script>
 <script>
@@ -74,7 +74,7 @@ function rankWeapons(f){
 // ---- weapons ----
 const WP={fists:{n:'FISTS',cd:.2,d:-1,half:-2,zmin:.62,hint:'FAST  -  SHORT REACH'},bat:{n:'BASEBALL BAT',cd:.3,d:0,half:0,zmin:.5,hint:'BALANCED'},plank:{n:'2X4 LUMBER',cd:.46,d:1,half:2,zmin:.5,hint:'SLOW  -  HEAVY HITS'},club:{n:'GOLF CLUB',cd:.38,d:0,half:12,zmin:.5,hint:'WIDE SWEEP'},whip:{n:'WHIP',cd:.32,d:0,half:8,zmin:.28,hint:'LONG REACH'},nunchucks:{n:'NUNCHUCKS',cd:.16,d:-1,half:4,zmin:.5,hint:'VERY FAST COMBOS'}};
 const ALLW=['fists','bat','plank','club','whip','nunchucks'];
-let weapon='fists',menuSel=0,menu=[],scanT=0,scanMsg='',scanSent=0,gridAll=false,punch=0;
+let weapon='fists',menuSel=0,menu=[],scanT=0,scanMsg='',scanSent=0,gridAll=false,punch=0,swType='sweepR';
 function goWeapon(){scene='weapon';menu=[{id:'fists'},{id:'scan'}];menuSel=0;gridAll=false}
 function startScan(){scene='scan';scanT=0;scanMsg='';scanSent=0}
 function onShape(m){if(scene!=='scan')return;if(m.none){scanMsg='NOTHING SEEN. TAP THE OBJECT ON THE PHONE SCREEN, THEN TRY AGAIN.';scanT=Math.max(scanT,8);return}
@@ -101,18 +101,30 @@ function press(src){
  if(scene==='end'){if(endT>1.5)startOrCal();return}
  if(src!=='arm'&&camLive())return; // camera on: only a real bat swing counts
  if(sw||swCd>0)return;
- swing=.28;swCd=WP[weapon].cd;punch^=1;sw={pend:.12,pk:Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9)),src}}
+ const t0=performance.now();swing=.32;swCd=WP[weapon].cd;punch^=1;swType=(src==='arm'&&swingDir(t0))||(punch?'sweepR':'sweepL');
+ sw={pend:.12,pk:Math.max(spd,src==='arm'?0:FORCE*(1.2+Math.random()*.9)),src,t0}}
 function pop(x,y,t,c){pops.push({x,y,t:0,s:t,c:c||'#fff'})}
-function hit(e,dmg){e.hp-=dmg;e.fl=.16;e.z=Math.max(.3,e.z-.11*dmg);combo++;comboT=1.8;if(combo>bestCombo)bestCombo=combo;score+=10*combo;shake=.12;
+// What kind of swing was it? Look at where the bat travelled from just before the swing started until now.
+// Up = uppercut, down = overhead chop, sideways = sweep (left or right), barely moved = jab / thrust.
+function swingDir(t0){const nw=performance.now(),pts=samples.filter(q=>q.t>=t0-260&&q.t<=nw);if(pts.length<2)return null;
+ const a=pts[0],b=pts[pts.length-1],dx=b.x-a.x,dy=(b.y-a.y)*.75; // camera is 4:3, so height counts 3/4 as much as width
+ if(Math.hypot(dx,dy)<.14)return'jab';
+ if(dy<0&&-dy>=Math.abs(dx))return'upper';
+ if(dy>0&&dy>=Math.abs(dx))return'chop';
+ return dx>0?'sweepR':'sweepL'}
+const MOVE={fists:{sweepR:'HOOK',sweepL:'HOOK',upper:'UPPERCUT',chop:'OVERHAND',jab:'JAB'},w:{sweepR:'SWING',sweepL:'SWING',upper:'UPPERCUT',chop:'OVERHEAD',jab:'THRUST'}};
+function hit(e,dmg,knock,label){e.hp-=dmg;e.fl=.16;e.z=Math.max(.3,e.z-(knock||.11)*dmg);combo++;comboT=1.8;if(combo>bestCombo)bestCombo=combo;score+=10*combo;shake=.12;
  if(e.hp<=0){e.state='dead';e.t=0;kills++;score+=Math.round(e.T.pts*(1+combo*.1));pop(ex(e),ey(e)-eh(e)*.7,'KO!','#ffd860')}
- else{e.state='stun';e.t=0;pop(ex(e),ey(e)-eh(e)*.8,dmg>2?'SMASH':'HIT','#fff')}}
-// A swing sweeps the bat's whole path: every enemy close enough to that path takes the hit. Swing speed sets the damage.
+ else{e.state='stun';e.t=0;pop(ex(e),ey(e)-eh(e)*.8,label||'HIT','#fff')}}
+// A swing is judged by its path. Sweeps cover the whole sideways path; uppercuts, chops and jabs hit what is straight in front of the bat's end point.
 function resolveSwing(){
- const pw=clamp(sw.pk/(FORCE*2.2),.1,1),dmg=clamp((pw>.8?3:pw>.45?2:1)+WP[weapon].d,1,4),h=handPx();let x0=h.x,x1=h.x;
- if(sw.src==='arm'){const nw=performance.now();for(const q of samples){if(nw-q.t>350)continue;const px=W*clamp(.5+(q.x-.5)*GX,.02,.98);x0=Math.min(x0,px);x1=Math.max(x1,px)}}
+ const T=(sw.src==='arm'&&swingDir(sw.t0))||swType,pw=clamp(sw.pk/(FORCE*2.2),.1,1),Wp=WP[weapon],label=(MOVE[weapon]||MOVE.w)[T]||'HIT';
+ let dmg=clamp((pw>.8?3:pw>.45?2:1)+Wp.d+(T==='upper'||T==='chop'?1:0),1,4),half0=Wp.half+(T==='upper'?-6:T==='chop'?-4:T==='jab'?-8:0),knock=T==='upper'?.25:T==='chop'?.16:.11;
+ const h=handPx();let x0=h.x,x1=h.x;
+ if(sw.src==='arm'&&(T==='sweepR'||T==='sweepL')){const nw=performance.now();for(const q of samples){if(nw-q.t>350)continue;const px=W*clamp(.5+(q.x-.5)*GX,.02,.98);x0=Math.min(x0,px);x1=Math.max(x1,px)}}
  let n=0;
- for(const e of E){if(e.state==='dead'||e.z<WP[weapon].zmin)continue;const half=e.T.w*eh(e)*.5+16+WP[weapon].half;
-  if(pw>.92||(ex(e)>=x0-half&&ex(e)<=x1+half)){hit(e,pw>.92?Math.max(dmg,3):dmg);n++}}
+ for(const e of E){if(e.state==='dead'||e.z<Wp.zmin)continue;const half=e.T.w*eh(e)*.5+16+half0;
+  if(pw>.92||(ex(e)>=x0-half&&ex(e)<=x1+half)){hit(e,pw>.92?Math.max(dmg,3):dmg,knock,label);n++}}
  if(pw>.92&&n)flash=.15;
  if(!n){pop(h.x,h.y-8,'WHIFF','#9aa')}
  sw=null}
@@ -204,19 +216,21 @@ function drawW(c,k,hx,hy,a,L,t){const ux=Math.cos(a),uy=Math.sin(a),nx=-uy,ny=ux
   c.strokeStyle='#b0b0b8';c.lineWidth=Math.max(1,1.2*s);c.beginPath();c.moveTo(j[0],j[1]);c.lineTo(j[0]+Math.cos(a+(a2-a)*.5)*5*s,j[1]+Math.sin(a+(a2-a)*.5)*5*s);c.stroke();
   const j2=[j[0]+Math.cos(a+(a2-a)*.5)*5*s,j[1]+Math.sin(a+(a2-a)*.5)*5*s];stick(c,j2[0],j2[1],a2,l1,2.2*s,2.2*s,'#5a3418');stick(c,j2[0],j2[1],a2,l1*.35,2.4*s,2.4*s,'#222')}}
 function glove(c,x,y,r,col){c.fillStyle='#2a0a0a';c.beginPath();c.arc(x,y,r+1,0,7);c.fill();c.fillStyle=col;c.beginPath();c.arc(x,y,r,0,7);c.fill();c.fillStyle='rgba(255,255,255,.35)';c.beginPath();c.arc(x-r*.3,y-r*.35,r*.35,0,7);c.fill();c.fillStyle='#e8e8f0';c.fillRect(x-r*.7,y+r*.7,r*1.4,r*.5);c.fillStyle='#fff';c.fillRect(x-r*.1,y-r*.9,r*.2,r*.4)}
-function drawFists(h,sp){const f=swing>0?Math.sin(sp*Math.PI):0,L={x:h.x-20,y:h.y+8},R={x:h.x+20,y:h.y+8};
- const act=punch?R:L,idle=punch?L:R;
- arm(W*.38,H+14,L.x,L.y+8,'#2e3a66');arm(W*.72,H+14,R.x,R.y+8,'#3b4a7a');
- glove(g,idle.x,idle.y,10,'#c83030');
- glove(g,act.x+(act===L?6:-6)*f,act.y-30*f,10+9*f,'#e03a3a')}
-function drawBat(){const h=handPx(),sp=swing>0?(1-swing/.28):0,k=weapon;
- if(k==='fists'){drawFists(h,sp);return}
- const a=swing>0?-2.3+sp*2.3:-2.3,L=k==='whip'?42:k==='nunchucks'?46:k==='club'?54:k==='plank'?50:48;
- drawW(g,k,h.x,h.y,a,L,sp);
- const ux=Math.cos(a),uy=Math.sin(a),f2={x:h.x+ux*9,y:h.y+uy*9};
- arm(W*.62,H+12,f2.x,f2.y+3,'#2e3a66');arm(W*.86,H+12,h.x,h.y+3,'#3b4a7a');
- fist(f2.x,f2.y);fist(h.x,h.y);
- if(swing>0){g.strokeStyle='rgba(255,200,120,.6)';g.lineWidth=2;g.beginPath();g.arc(h.x,h.y,L*.9,a-.9,a);g.stroke()}}
+// Where the weapon (or glove) is during a swing, for each kind of move. u = 0..1 through the swing.
+function swingPose(T,u,hx){const y0=H*.8,e=u*u*(3-2*u);
+ if(T==='upper')return{x:hx,y:y0+36-e*92,a:-2.0+e*.8,s:1,r:10+8*e};
+ if(T==='chop')return{x:hx,y:y0-84+e*92,a:-1.35+e*.55,s:1+.5*e,r:10+9*e};
+ if(T==='jab')return{x:hx,y:y0-6-e*14,a:-1.57,s:.55+.9*Math.sin(Math.min(u,1)*Math.PI),r:10+11*Math.sin(Math.min(u,1)*Math.PI)};
+ const R=T==='sweepR';return{x:hx+(R?-1:1)*(36-e*72),y:y0-8,a:R?-2.7+e*2.4:-.45-e*2.4,s:1,r:12}}
+function drawBat(){const h=handPx(),k=weapon;
+ g.strokeStyle='rgba(255,255,255,.25)';g.lineWidth=1;g.beginPath();g.arc(h.x,h.y,3,0,7);g.stroke(); // faint dot: where the phone sees your bat
+ if(swing<=0)return; // weapon and gloves are hidden until you swing
+ const u=clamp(1-swing/.32,0,1),P=swingPose(swType,u,h.x);g.globalAlpha=clamp(swing/.07,0,1);
+ if(k==='fists'){for(let i=3;i>=1;i--){const q=swingPose(swType,Math.max(0,u-i*.09),h.x);g.globalAlpha=.16;glove(g,q.x,q.y,q.r,'#e03a3a')}g.globalAlpha=clamp(swing/.07,0,1);glove(g,P.x,P.y,P.r,'#e03a3a')}
+ else{const L=(k==='whip'?42:k==='nunchucks'?46:k==='club'?54:k==='plank'?50:48)*P.s;
+  g.strokeStyle='rgba(255,210,140,.55)';g.lineWidth=2;g.beginPath();for(let i=1;i<=3;i++){const q=swingPose(swType,Math.max(0,u-i*.09),h.x);g.globalAlpha=.25;g.moveTo(q.x+Math.cos(q.a)*L,q.y+Math.sin(q.a)*L);g.lineTo(q.x+Math.cos(q.a)*L*.8,q.y+Math.sin(q.a)*L*.8)}g.stroke();
+  g.globalAlpha=clamp(swing/.07,0,1);drawW(g,k,P.x,P.y,P.a,L,u)}
+ g.globalAlpha=1}
 // menu cards are drawn straight onto the sharp text layer (no fisheye) so they line up with their labels
 function card(x,y,w,h,sel){cg.fillStyle=sel?'rgba(255,154,60,.28)':'rgba(255,255,255,.07)';cg.fillRect(x,y,w,h);cg.strokeStyle=sel?'#ff9a3c':'rgba(255,255,255,.3)';cg.lineWidth=sel?2:1;cg.strokeRect(x+.5,y+.5,w-1,h-1)}
 function icon(k,cx,cy,sz){if(k==='fists'){glove(cg,cx-sz*.3,cy+2,sz*.22,'#c83030');glove(cg,cx+sz*.3,cy-2,sz*.22,'#e03a3a');return}
@@ -259,12 +273,12 @@ function draw(){
   if(bannerT>0)txt(banner,W/2,H*.3,15,'#ffd860');
   for(const p of pops)txt(p.s,p.x,p.y-p.t*18,9,p.c);
   if(!DEBUG&&performance.now()-hand.t>1200&&Math.floor(clock*2)%2)txt('STEP INTO VIEW OF THE PHONE',W/2,H-12,8,'#ffb060');
-  else if(wave===0&&E.length<3)txt(camLive()?'SWING THE BAT SIDE TO SIDE - HIT THEM BEFORE THEY HIT YOU':'PRESS OK TO SWING',W/2,H-12,7,'#fff');
+  else if(wave===0&&E.length<3)txt(camLive()?'SWING: SIDE, UPPERCUT, OVERHEAD OR JAB - HIT THEM FIRST':'PRESS OK TO SWING',W/2,H-12,7,'#fff');
   {const mw=70,fr=clamp(spd/(FORCE*2.2),0,1);cg.fillStyle='rgba(0,0,0,.6)';cg.fillRect(6,H-11,mw,5);cg.fillStyle=spd>=FORCE?'#7dff7d':'#6ab0ff';cg.fillRect(6,H-11,mw*fr,5);cg.fillStyle='#fff';cg.fillRect(6+mw*FORCE/(FORCE*2.2),H-12,1,7)}}
  else if(scene==='title'){
-  txt('BAT ALLEY',W/2,44,26,'#ff9a3c');
-  txt('FIRST-PERSON STREET BRAWLER. YOUR BAT IS TRACKED BY THE PHONE CAMERA.',W/2,66,7,'#fff');
-  txt(camLive()?'SWING SIDE TO SIDE TO CLEAR THE ALLEY. HARDER SWING = MORE DAMAGE.':'PRESS OK TO SWING AT THE ENEMY IN FRONT OF YOU',W/2,78,7,'#fff');
+  txt('BOULEVARD OF BRAWL',W/2,44,13,'#ff9a3c');
+  txt('FIRST-PERSON STREET BRAWLER',W/2,66,8,'#fff');
+  txt(camLive()?'SWING ANY WAY: SIDE, UPPERCUT, OVERHEAD, JAB':'PRESS OK TO SWING AT THE ENEMY IN FRONT OF YOU',W/2,78,7,'#fff');
   txt(camLive()?'SWING TO START':'PRESS OK TO START',W/2,104,10,Math.floor(clock*2)%2?'#7dff7d':'#3a9a3a');
   txt(DEBUG?'DEBUG: MOUSE = BAT, CLICK = SWING':(phoneUp?'PHONE CONNECTED':'WAITING FOR PHONE (ROOM '+room+')'),W/2,126,7,phoneUp||DEBUG?'#7dff7d':'#ff9a60')}
  else if(scene==='weapon'||scene==='scan'||scene==='pick')menuText();
@@ -290,5 +304,5 @@ let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.
 let last=performance.now();
 function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();if(!window.__booted){window.__booted=1;var bt=document.getElementById('boot');if(bt)bt.parentNode.removeChild(bt)}window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
-window.__disp=toScreen;window.__fb=()=>({weapon,menu:menu.map(m=>m.id),menuSel,scanMsg,FORCE,cal:{n:cal.n,done:cal.done},scene,hp,score,wave,kills,combo,won,phoneUp,E:E.map(e=>({k:e.k,z:e.z,state:e.state,hp:e.hp,x:ex(e)}))});
+window.__disp=toScreen;window.__fb=()=>({swType,pops:pops.map(p=>p.s),weapon,menu:menu.map(m=>m.id),menuSel,scanMsg,FORCE,cal:{n:cal.n,done:cal.done},scene,hp,score,wave,kills,combo,won,phoneUp,E:E.map(e=>({k:e.k,z:e.z,state:e.state,hp:e.hp,x:ex(e)}))});
 </script></body></html>
