@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Camera test</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;background:#000;color:#fff;font:28px/1.4 monospace;padding:30px}
+.ok{color:#4f4}.bad{color:#f55}.warn{color:#fd4}
+video{width:480px;height:270px;background:#222;border:2px solid #666;margin-top:20px}
+</style></head><body>
+<div>CAMERA TEST (Fire TV)</div>
+<div id="out"></div>
+<video id="v" autoplay muted playsinline></video>
+<script>
+const out=document.getElementById('out');
+function log(t,c){const d=document.createElement('div');d.className=c||'';d.textContent=t;out.appendChild(d)}
+log('Page loaded. https: '+(location.protocol==='https:'));
+log('UserAgent: '+navigator.userAgent);
+(async()=>{
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+  log('RESULT: no camera API in this browser','bad');return}
+ log('Camera API exists','ok');
+ try{
+  const devs=await navigator.mediaDevices.enumerateDevices();
+  const cams=devs.filter(d=>d.kind==='videoinput');
+  log('Cameras listed: '+cams.length, cams.length?'ok':'warn');
+  cams.forEach(c=>log(' - '+(c.label||'(no name yet)')));
+ }catch(e){log('enumerateDevices error: '+e.name,'bad')}
+ try{
+  const s=await navigator.mediaDevices.getUserMedia({video:true});
+  const v=document.getElementById('v');v.srcObject=s;
+  const t=s.getVideoTracks()[0];
+  log('RESULT: CAMERA WORKS: '+t.label,'ok');
+  const st=t.getSettings();log('Size: '+st.width+'x'+st.height+' fps '+st.frameRate);
+  setTimeout(()=>{
+   try{
+    const c=document.createElement('canvas');c.width=320;c.height=240;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    let n=0;const t0=performance.now();
+    (function loop(){
+     x.drawImage(v,0,0,320,240);
+     const d=x.getImageData(0,0,320,240).data;
+     let s=0;for(let i=0;i<d.length;i+=4){s+=d[i]+d[i+1]+d[i+2]}
+     n++;
+     if(performance.now()-t0<3000){requestAnimationFrame(loop)}
+     else{const f=(n/3).toFixed(1);log('SPEED: '+f+' frames/sec processed','ok');
+      log(f>=20?'Fast enough to consider':'Too slow for tracking',f>=20?'ok':'bad')}
+    })();
+   }catch(e){log('Speed test failed: '+e.name,'bad')}
+  },1500);
+ }catch(e){log('RESULT: camera blocked/failed: '+e.name+' '+e.message,'bad')}
+})();
+</script></body></html>
