@@ -8,7 +8,7 @@ rs();addEventListener('resize',rs);
 const qp=new URLSearchParams(location.search);
 const room=(qp.get('room')||'ABCD').toUpperCase();
 // Optional: add &phone=<address of your phone tracker app> to the TV address and the menu shows a QR code that opens it already pointed at this room and relay.
-const PHONE_URL=qp.get('phone')||'',PHONE_PAIR=PHONE_URL?PHONE_URL+(PHONE_URL.indexOf('?')>=0?'&':'?')+'room='+room+'&relay='+encodeURIComponent((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'):'';
+const PHONE_URL=(qp.get('phone')&&qp.get('phone').indexOf(location.host)>=0)?qp.get('phone'):location.origin+'/tracker/',PHONE_PAIR=PHONE_URL?PHONE_URL+(PHONE_URL.indexOf('?')>=0?'&':'?')+'room='+room+'&relay='+encodeURIComponent((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws'):'';
 // The phone is the ONLY controller. Mouse/keyboard/remote input is off unless the page is opened with ?debug=1
 // (handy for judges or testing the game without a phone; it does not exercise the camera tracking).
 const DEBUG=qp.has('debug');
