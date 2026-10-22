@@ -13,7 +13,7 @@ const server = http.createServer((req, res) => {
   if (p.startsWith('/tracker/')) { // the phone tracker app. Looks in public/tracker/ first, then in public/ itself (in case the files were uploaded loose).
     const pub = path.join(__dirname, 'public');
     const rel = decodeURIComponent(p.slice('/tracker/'.length)) || 'index.html';
-    const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+    const types = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
     const tries = [path.join(pub, 'tracker', rel), path.join(pub, rel), path.join(pub, path.basename(rel))];
     for (const t of tries) {
       const fp = path.normalize(t);
@@ -22,26 +22,11 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(404); return res.end('not found');
   }
-  const pages = {
-    '/keytest.html': 'keytest.html',
-    '/camtest.html': 'camtest.html',
-    '/blastertest.html': 'blastertest.html',
-    '/blaster.html': 'blaster.html',
-    '/handtest.html': 'handtest.html',
-    '/posesend.html': 'posesend.html',
-    '/RooftopRally.html': 'RooftopRally.html',
-    '/golf.html': 'golf.html',
-    '/duel.html': 'duel.html',
-    '/brawl.html': 'brawl.html',
-    '/batsend.html': 'batsend.html',
-    '/tv.html': 'tv.html',
-    '/index.html': 'index.html',
-    '/public/index.html': 'index.html'
-  };
+  const pages = { '/keytest.html': 'keytest.html', '/camtest.html': 'camtest.html', '/blastertest.html': 'blastertest.html', '/blaster.html': 'blaster.html', '/handtest.html': 'handtest.html', '/posesend.html': 'posesend.html', '/fb': 'fastball.html', '/golf': 'golf.html', '/brawl': 'brawl.html', '/duel': 'duel.html', '/tennis': 'tennis.html', '/qb': 'qb.html', '/bat': 'batsend.html', '/qr.js': 'qr.js' }; // small test pages
   if (pages[p]) {
     try {
       const f = fs.readFileSync(path.join(__dirname, 'public', pages[p]));
-      res.writeHead(200, { 'Content-Type': p.endsWith('.js') ? 'application/javascript' : 'text/html', 'Cache-Control': 'no-store, max-age=0' });
+      res.writeHead(200, { 'Content-Type': p.endsWith('.js') ? 'application/javascript' : 'text/html', 'Cache-Control': 'no-store, max-age=0' }); // never let a TV browser keep an old copy of a game page
       return res.end(f);
     } catch (e) { res.writeHead(404); return res.end('test page not uploaded'); }
   }
@@ -58,7 +43,7 @@ wss.on('connection', (ws, req) => {
   const other = role === 'tv' ? 'phone' : 'tv';
   const notify = (t) => r[other].forEach(s => s.readyState === 1 && s.send(JSON.stringify({ type: t, role })));
   notify('peer_joined');
-  if (r[other].size > 0) ws.send(JSON.stringify({ type: 'peer_joined', role: other }));
+  if (r[other].size > 0) ws.send(JSON.stringify({ type: 'peer_joined', role: other })); // tell newcomer a peer is already here
   ws.on('message', (d) => {
     let m; try { m = JSON.parse(d); } catch { return; }
     if (m.type === 'ping') return ws.send(JSON.stringify({ type: 'pong', t: m.t }));
