@@ -1,110 +1,148 @@
-# Spatial Finger Tracker - Lightgun Phone Controller
+# Spatial Arcade
 
-The phone is **strictly a gun controller**. The game is played and displayed **only on the TV**. The phone camera tracks the TV border in the background to calculate aim in real-time, providing instant local audio/haptic feedback on trigger pull.
+**Turn the phone you already own into a motion and aim controller for Fire TV. No extra hardware.**
 
----
+Built by Josh Pearl for the Amazon "Build, Ship, Shape" Developer Hackathon, Fire TV track.
 
-## Architecture & Layout
+Fire TV has no built-in way to aim a gun or swing a bat. Light guns and motion controllers need extra hardware that costs money. This project uses the camera in an ordinary phone to follow a prop (a toy gun, a bat, a racket) or a hand, sends the movement to the TV over the internet, and lets Fire TV games react to it in real time.
 
-1. **Play Screen (Gun Controller Mode)**:
-   - **Landscape, clean black background**: The video preview, crosshairs, targets, impact marks, and scoreboards are removed from the main screen (available only in Settings).
-   - **TRIGGER (Right ~60% full-height)**:
-     - Touch down sends `{"type":"fire_down"}`.
-     - Immediate local feedback: vibrates `35 ms` and plays a synthesized 90 ms noise burst + 60 Hz thump (or a 15 ms dry click if TV ammo is 0).
-     - Holding for >250 ms automatically repeats recoil vibration and sound every 110 ms until release (or until TV ammo is 0 or reloading).
-     - Touch up / cancel sends `{"type":"fire_up"}`.
-     - Label updates to **START** when the TV scene is `"menu"`.
-   - **RELOAD (Large square button, left-middle)**:
-     - Touch down sends `{"type":"reload"}`, vibrates `20 ms`, and plays a metallic reload clack.
-     - Automatically dimmed and disabled when the TV scene is `"menu"`.
-   - **HOME (HOLD) (Top-left corner)**:
-     - Requires pressing and holding for 500 ms with an animated SVG circular progress ring.
-     - On completion: sends `{"type":"home"}` and vibrates once for `60 ms`. Releasing early cancels it.
-   - **Independent Pointer Tracking**: TRIGGER and RELOAD can be touched simultaneously with different fingers. Touches starting outside buttons do not affect aim or fire.
-   - **Small Dim SETTINGS Button (Bottom-left corner)**:
-     - Opens the Settings & Calibration modal.
-   - **Single Status Line**:
-     - Displays `CONNECTED` or `RECONNECTING`, and dim `AMMO 9/30`.
-
-2. **Web Audio API Sound Synthesis (Zero Audio Files)**:
-   - AudioContext initializes / resumes on the first user touch.
-   - **Shot sound**: 90 ms burst of white noise with fast exponential fade-out + 60 Hz sine thump lasting 70 ms.
-   - **Dry click**: 15 ms high-frequency noise tick (triggered when TV reports ammo is 0).
-   - **Reload clacks**: 30 ms resonant metallic noise burst when reloading begins, and a second higher clack when TV state changes from `reloading: true` to `reloading: false`.
-   - **SOUND Switch**: Toggleable in Settings (default ON, saved in `localStorage`).
-
-3. **Follows Messages From The TV**:
-   - `{"type":"state","scene":"menu"|"play","ammo":...,"mag":...,"assist":...,"reloading":...,"hits":...,"shots":...}`: Updates HUD status, button labels, and stops auto-repeat if ammo is 0 or reloading is true.
-   - `{"type":"shot","hit":true}`: Vibrates `[20, 40, 50]` **only if no finger is currently touching down**.
-   - `{"type":"lock","locked":true}`: Vibrates `15 ms` **only if no finger is currently touching down**.
-   - `{"type":"reload"}`: Vibrates `[30, 60, 30]` and plays the reload clack.
-   - `{"type":"hurt"}`: Vibrates `[60, 40, 60]` when the player is hit in Warehouse Run.
-   - `{"type":"result",...}`: Ignored on the phone controller.
-
-4. **Bluetooth Gamepad Integration (Gamepad API)**:
-   - Connects to any standard paired Bluetooth controller (Xbox, PlayStation, 8BitDo, generic).
-   - High-performance polling: every 8 ms via `setInterval` AND on every `requestAnimationFrame` on the play screen (disabled inside Settings).
-   - **Trigger**: Button 7 (R2), Button 5 (R1), or Button 0 (A) triggers `fire_down` with recoil vibration, shot audio, and full-auto repeat. Multiple held trigger buttons share one state and send `fire_up` only when all are released.
-   - **Reload**: Button 2 (X), Button 4 (L1), or Button 6 (L2) triggers reload (`20 ms` vibration and clack).
-   - **Home (Hold)**: Button 3 (Y) or Button 9 (Start) held for 500 ms triggers Home (`60 ms` vibration and fills the on-screen progress ring).
-   - **Menu Choice**: D-pad Left (button 14) sends `{"type":"menu_sel","v":0}`. D-pad Right (button 15) sends `{"type":"menu_sel","v":1}`.
-   - **Camera Authoritative**: Gamepad sticks are ignored completely; optical tracking solely controls aiming.
-   - Disconnecting gamepad while trigger is held sends `fire_up`.
-   - In Settings: includes `"GAMEPAD: connected / not connected"` status line with device name.
-
-5. **XIT AR Blaster Integration (Web Bluetooth)**:
-   - Connects to the XIT AR Blaster (Bluetooth name prefix `"ARGUN"`, service `0xFFF0`, characteristic `0xFFF3`).
-   - Tapping the **BLASTER** button on the play screen (next to SETTINGS) or inside the Settings modal prompts the browser Bluetooth device picker.
-   - Subscribes to characteristic notifications (`startNotifications()`), decodes incoming packet values as ASCII text via `TextDecoder`, trims whitespace, and fires the gun (same as the on-screen TRIGGER).
-   - Displays `"BLASTER NOT SUPPORTED IN THIS BROWSER"` if Web Bluetooth is unavailable. All operations are safely wrapped in `try/catch`.
-
-6. **Settings & Calibration Screen**:
-   - Camera & CV debug view with detected quad border overlay and binary threshold mask toggle.
-   - Exposure threshold slider (40–240) and smoothing alpha slider (0.05–0.95).
-   - "Set Aim Point" tool: tap directly on the camera preview in Settings to calibrate sights offset.
-   - Draggable 4-corner handles for manual quad calibration.
-   - Homography Self-Test and Resolution Benchmark runners.
-   - WebSocket relay URL and 4-letter Room Code inputs (auto-saved to device).
-   - Direct toggle to switch into **Fire TV Receiver Mode** (`?mode=tv`).
+The games are the proof. The product is the **input layer**: a small relay server plus a phone page that any Fire TV web game can listen to.
 
 ---
 
-## How to Set Relay URL and Room Code
+## Play the games
 
-1. Click the **Settings** icon (gear icon) in the top-right header of the phone tracker interface.
-2. In the settings modal:
-   - **Relay URL**: Enter your secure WebSocket relay endpoint (e.g., `wss://my-relay.onrender.com/ws` or `wss://<host>/ws`).
-   - **Room Code**: Enter a 4-letter room code (e.g., `TV01`).
-3. Click **Save & Connect**. The tracker immediately connects to:
-   ```
-   <RELAY_URL>?room=<ROOM_CODE>&role=phone
-   ```
-4. **Persistent Device Storage**:
-   - Both the **Relay URL** and **Room Code** are automatically saved to `localStorage` on your phone, along with your calibrated Aim Offset, Exposure Threshold, and Corner Smoothing Alpha.
-   - When you refresh the page or return later, your configured settings are preserved and reconnected automatically without needing to re-enter them.
-5. The status pill in the top bar will display:
-   - `connected` (green indicator with live round-trip latency in ms)
-   - `reconnecting` (amber indicator, retrying every 1s)
+Every game runs as a web page on the Fire TV (open it in the **Amazon Web App Tester**) and is controlled by a web page on a phone. Open the TV page first, then the phone page.
 
-You can also pre-populate these parameters via URL query parameters:
+Base address: `https://spatial-arcade.onrender.com`
+
+| Game | What it is | Open on the Fire TV | Open on the phone |
+|---|---|---|---|
+| **Sky Delivery** | Light-gun shooter. Aim the phone at the screen, pull the trigger. | `/tv` | `/tracker/` (or scan the QR on the TV) |
+| **Driving Range** | Golf. A full swing hits the ball; swing speed sets distance. | `/golf` | `/bat` |
+| **Boulevard of Brawl** | First-person street brawler. Swing direction picks the move. Scan a real object to choose your weapon. | `/brawl` | `/bat` |
+| **Boulevard Duel** | One-on-one fighter, best of three. Block, special move, finisher you choose yourself. | `/duel` | `/bat` |
+| **Rooftop Rally** | First-person tennis against the computer. | `/tennis` | `/bat` |
+
+Examples: Fire TV `https://spatial-arcade.onrender.com/tennis`, phone `https://spatial-arcade.onrender.com/bat`.
+
+**Easiest pairing:** the TV title screen shows a QR code. Scan it with the phone and it opens the right phone page already paired.
+
+**Steps**
+1. On the Fire TV, open the game's address in the Web App Tester.
+2. On the phone (Chrome), open the phone address and allow the camera.
+3. The TV changes from "WAITING FOR PHONE" to "PHONE CONNECTED".
+4. Swing, or press OK on the Fire TV remote, to begin. The bat games ask for three warm-up swings so they can match your swing speed.
+
+**Notes**
+- The free server sleeps when unused. The first page load can take up to about a minute.
+- Games use room code `ABCD` by default. If two TVs use the same room, they will hear each other's phones. Add `?room=XYZ1` to the address on both devices to use a different room.
+- Phone page for hand and arm tracking (experimental, no prop needed): `/posesend.html`.
+
+### Try it without a phone (for judges)
+
+Add `?debug=1` to any game address and open it in a desktop browser. The mouse acts as the controller (move to aim or reach, click to swing or shoot). This tests the game logic but **not** the camera tracking.
+
+Example: `https://spatial-arcade.onrender.com/tennis?debug=1`
+
+---
+
+## How it works
+
 ```
-https://<your-app-url>/?room=TV01&relay=wss://my-relay.onrender.com/ws
+Phone (camera)  --WebSocket-->  Relay server (Render)  --WebSocket-->  Fire TV (game page)
+  tracks a prop                   pairs devices by                       draws the game and
+  or a hand, sends                room code and passes                   reacts to the movement
+  position + speed                messages along
 ```
 
-To view the Fire TV Receiver display test scene on a TV or second screen:
+- **Relay** (`server.js`, Node + `ws`): pairs a phone and a TV by room code and forwards messages. It also serves the game pages.
+- **Phone side** (details for the light-gun controller are in [docs/PHONE_TRACKER.md](docs/PHONE_TRACKER.md)):
+  - `/tracker/` finds the TV screen in the camera view and converts where you point into a position on the screen. It also sends trigger, reload and home buttons.
+  - `/bat` follows a bright-colored prop by color (tap the prop on the phone screen to teach it the color).
+  - `/posesend.html` follows a hand or arm.
+- **Game side:** each game is a single HTML file drawn on a canvas. The bat games turn the phone's position stream into swings: speed decides power, and the path decides the type of move.
+- **Weapon scan (Boulevard of Brawl):** the phone measures the outline of an object held up to the camera, and the game ranks its best guesses (bat, 2x4, golf club, whip, nunchucks) for the player to pick. The rules are hand-tuned, not a trained model, so guesses are sometimes wrong. The player always gets to correct them.
+- **Look:** games draw small and are stretched up for a retro look. `?px=1` on a game address gives a chunkier look.
+
+### Repository layout
+
 ```
-https://<your-app-url>/?mode=tv
+server.js            relay + page server
+package.json         dependencies (ws)
+public/
+  tv.html            Sky Delivery (light-gun game)
+  golf.html          Driving Range
+  brawl.html         Boulevard of Brawl
+  duel.html          Boulevard Duel
+  tennis.html        Rooftop Rally
+  batsend.html       phone page for prop tracking (served at /bat)
+  posesend.html      phone page for hand/arm tracking
+  tracker/           phone page for the light gun (screen finding + trigger)
+  camtest.html       checks the phone camera works
+  qr.js              QR code generator used for pairing
 ```
 
 ---
 
-## Known Limits
+## Status: what works and what doesn't
 
-1. **Room Lighting & Exposure**:
-   - Extreme direct glare or direct sunlight reflecting off the television screen can wash out the high-contrast white border. Use the **Threshold Slider** in the sidebar to calibrate for ambient room lighting.
-2. **TV Border Contrast**:
-   - The television or monitor must display a clear, high-contrast white rectangular border (around 3.5% of screen height) against a dark or black screen bezel.
-3. **Camera Framing & Distance**:
-   - The phone camera must be positioned such that all four outer corners of the TV border remain within the camera's field of view. Extreme close-ups that clip one or more corners will trigger the `LOST` state.
-4. **WebSocket Network Jitter**:
-   - Optimal responsiveness requires low LAN or regional relay latency. If using a remote free cloud relay, round-trip time depends on network distance and host sleep states.
+Being straight about this, since a demo can hide problems.
+
+**Tested on real hardware (my phone and Fire TV):** the relay and pairing, the light gun (Sky Delivery) end to end, and golf and the brawler (weapon mode) loading and responding on a Fire TV.
+
+**Tested only in a simulated browser (not yet on real hardware):** the full-swing detection in golf, swing-direction recognition in the brawler, Boulevard Duel and Rooftop Rally (menus, rules, scoring, finishers and match flow, driven by scripted input). Real camera tracking of fast swings may behave differently.
+
+**Known limits**
+- Tracking depends on lighting. Direct sun, glare on the TV, or a dim room can make the phone lose the prop or the TV border.
+- The light gun needs the phone to see all four edges of the TV from several feet away. The TV border can be cropped if the Fire TV overscan is not calibrated.
+- The prop tracker follows one bright color. Pale wood, silver, and thin frames (like a racket) track poorly without bright tape.
+- Weapon scan guesses can be wrong, and the whip is the hardest to recognize.
+- The light gun responds more slowly than it did in my first tests. I have not found the cause.
+- Hand and arm tracking (`/posesend.html`) has not been tested with two hands.
+- Runs on a free server: it sleeps when idle, and it is shared by every user on the same room code.
+- Phone aiming by hand is awkward. A gun-shaped shell with a trigger would feel much better (see below).
+
+**Measured results:** aim accuracy [ ] at [ ] feet; response time [ ] ms. *(Fill in with real measurements, or delete this line.)*
+
+---
+
+## Why Fire TV could use this
+
+Amazon already makes game controllers. What Fire TV doesn't have is a way to aim or swing in a game without extra hardware. A phone camera is a low-cost proof that the input works. A first-party shell, like a light gun or paddle that holds a phone, could make it feel like a real controller. I'm not claiming there's proven demand; this project shows the technique works and what the rough edges are.
+
+## What's next (ideas, not promises)
+
+- Gun-shaped shell with a trigger that holds the phone.
+- A family-game layer on the same pairing: phones as hands or controllers for party games, with an AI player.
+- A reusable script or small library so other developers can add phone input to a Fire TV web game with a few lines.
+- A tablet or a second phone as the display.
+
+---
+
+## Built with
+
+HTML, JavaScript and canvas for the games; Node.js with the `ws` library for the relay; hosted on Render (free tier); phone pages use the browser camera. The light-gun phone page was prototyped in Google AI Studio (React and Vite). I built this with heavy AI assistance (Claude) and have no formal programming background. All five games are original, and none use anyone else's characters, art or music.
+
+## Credits and licenses
+
+- `ws` (Node WebSocket library): MIT.
+- `qr.js` (QR code generator): [confirm source and license before publishing].
+- Game art and sound: drawn in code; no outside assets.
+
+Project license: the source is in a private repository shared with the hackathon judges for evaluation. Copyright (c) 2026 Josh Pearl. All rights reserved.
+
+## About
+
+Built by Josh Pearl, Saint Paul, Minnesota. Solo project.
+
+Repository: private, shared with the judges for evaluation (see the Devpost submission for access)
+Demo video: [paste link]
+
+
+
+
+
+
+
+
