@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tracker tuning</title>
+<style>body{background:#000;color:#fff;font:bold 20px monospace;margin:0;padding:16px}h1{font-size:22px}button{font:bold 22px monospace;padding:16px 20px;margin:6px 6px 6px 0;background:#223;color:#fff;border:2px solid #fff;border-radius:8px}button.on{background:#1a7a3a}a{color:#9cf;font-size:24px;display:inline-block;margin-top:18px}#s{color:#ffd860;margin:10px 0}</style></head><body>
+<h1>TRACKER TUNING</h1>
+<div id="s"></div>
+<p>1. SMOOTHING (higher = faster follow, more jitter)</p><div id="a"></div>
+<p>2. BORDER BRIGHTNESS CUTOFF (lower = finds a dim border more easily; try 130 if it keeps losing the TV)</p><div id="t"></div>
+<p><button id="r">RESET TO DEFAULTS</button></p>
+<a href="/tracker/">OPEN THE TRACKER &gt;</a>
+<script>
+var KA='sft_smoothing_alpha',KT='sft_threshold';
+function get(k,d){try{var v=localStorage.getItem(k);return v==null?d:Number(v)}catch(e){return d}}
+function set(k,v){try{localStorage.setItem(k,String(v))}catch(e){alert('Could not save (browser blocks storage)')}draw()}
+var AL=[.5,.65,.8,.9],TH=[120,130,145,160,180];
+function draw(){var a=get(KA,.5),t=get(KT,160);document.getElementById('s').textContent='Now: smoothing '+a+', cutoff '+t;
+ document.getElementById('a').innerHTML=AL.map(function(x){return '<button class="'+(x===a?'on':'')+'" onclick="set(KA,'+x+')">'+x+'</button>'}).join('');
+ document.getElementById('t').innerHTML=TH.map(function(x){return '<button class="'+(x===t?'on':'')+'" onclick="set(KT,'+x+')">'+x+'</button>'}).join('')}
+document.getElementById('r').onclick=function(){try{localStorage.removeItem(KA);localStorage.removeItem(KT)}catch(e){}draw()};
+draw();
+</script></body></html>
