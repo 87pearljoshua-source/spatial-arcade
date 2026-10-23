@@ -22,9 +22,11 @@ Base address: `https://spatial-arcade.onrender.com`
 | **Driving Range** | Golf. A full swing hits the ball; swing speed sets distance. | `/golf` | `/bat` |
 | **Boulevard of Brawl** | First-person street brawler. Swing direction picks the move. Scan a real object to choose your weapon. | `/brawl` | `/bat` |
 | **Boulevard Duel** | One-on-one fighter, best of three. Block, special move, finisher you choose yourself. | `/duel` | `/bat` |
-| **Rooftop Rally** | First-person tennis against the computer. | `/tennis` | `/bat` |
+| **Rooftop Rally** | First-person tennis against the computer. You serve too. | `/tennis` | `/posesend.html` (tracks your arm; the game draws the racket) |
 
 Examples: Fire TV `https://spatial-arcade.onrender.com/tennis`, phone `https://spatial-arcade.onrender.com/bat`.
+
+**Players and records:** each game shows the current player in the top-left corner. Press **Menu** on the Fire TV remote (in Sky Delivery, **Fast-forward**; on a keyboard, **P**) to pick a player, add a new one (up to 6), or see records. High scores and records are saved per player, per game, in the TV browser. They stay on that device and can be lost if the browser data is cleared.
 
 **Easiest pairing:** the TV title screen shows a QR code. Scan it with the phone and it opens the right phone page already paired.
 
@@ -81,6 +83,7 @@ public/
   tracker/           phone page for the light gun (screen finding + trigger)
   camtest.html       checks the phone camera works
   qr.js              QR code generator used for pairing
+  profiles.js        player profiles and saved records (shared by all games)
 ```
 
 ---
@@ -103,7 +106,7 @@ Being straight about this, since a demo can hide problems.
 - Runs on a free server: it sleeps when idle, and it is shared by every user on the same room code.
 - Phone aiming by hand is awkward. A gun-shaped shell with a trigger would feel much better (see below).
 
-**Measured results:** aim accuracy [ ] at [ ] feet; response time [ ] ms. *(Fill in with real measurements, or delete this line.)*
+**Measured results:** I have not measured aim accuracy or response time with instruments. All speed and accuracy statements here come from playing it by hand.
 
 ---
 
@@ -127,7 +130,8 @@ HTML, JavaScript and canvas for the games; Node.js with the `ws` library for the
 ## Credits and licenses
 
 - `ws` (Node WebSocket library): MIT.
-- `qr.js` (QR code generator): [confirm source and license before publishing].
+- `qr.js` (QR Code Generator for JavaScript, Kazuhiko Arase): MIT license. The header comment is kept in the file.
+- MediaPipe Tasks Vision (Google), used by `/posesend.html` for hand and arm tracking, loaded from a CDN: Apache 2.0.
 - Game art and sound: drawn in code; no outside assets.
 
 Project license: the source is in a private repository shared with the hackathon judges for evaluation. Copyright (c) 2026 Josh Pearl. All rights reserved.
@@ -137,8 +141,7 @@ Project license: the source is in a private repository shared with the hackathon
 Built by Josh Pearl, Saint Paul, Minnesota. Solo project.
 
 Repository: private, shared with the judges for evaluation (see the Devpost submission for access)
-Demo video: [paste link]
-
+Demo video: [paste link before submitting]
 
 
 
