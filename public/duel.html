@@ -1,16 +1,17 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>window.onerror=function(m,u,l,c){var b=document.getElementById('boot');if(b){b.style.color='#ff8080';b.textContent='ERROR: '+m+'  (line '+l+')  - send me a photo of this screen'}};</script><title>Boulevard Duel</title>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
-canvas{width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh;image-rendering:pixelated;image-rendering:crisp-edges}</style></head><body>
+#wrap{position:relative;width:100vw;height:56.25vw;max-height:100vh;max-width:177.78vh}#wrap canvas{position:absolute;left:0;top:0;width:100%;height:100%}#ov{pointer-events:none}</style></head><body>
 <div id="boot" style="position:fixed;left:0;top:0;right:0;color:#fff;font:bold 22px monospace;padding:16px;z-index:9;white-space:pre-wrap">BOULEVARD DUEL v1 - loading...</div>
-<canvas id="c" width="256" height="144"></canvas>
-<script src="/qr.js"></script>
+<div id="wrap"><canvas id="c" width="256" height="144"></canvas><canvas id="ov" width="1024" height="576"></canvas></div>
+<script src="/qr.js"></script><script src="/profiles.js"></script><script>window.Profiles=window.Profiles||{init:function(){},played:function(){},record:function(){},add:function(){},cur:function(){return{name:"GUEST"}},open:function(){}}</script>
 <script>
 // BOULEVARD DUEL - first-person 1v1 fighter. Swing direction picks the move; hand up blocks; a forward push is the special; a saved 3-move sequence is the finisher.
 const qp=new URLSearchParams(location.search),DEBUG=qp.has('debug'),room=(qp.get('room')||'ABCD').toUpperCase();
 let FORCE=+qp.get('force')||1.2;const OKSWING=qp.has('okswing'),NOCAL=qp.has('nocal')||qp.has('force')||DEBUG; // arm speed (camera-widths/s) that counts as a swing; ?okswing lets OK swing too
 const GX=+qp.get('gx')||1.8,GY=+qp.get('gy')||1.8; // hand gain (tune if your reach feels too small/large)
 const W=256,H=144,HZ=52,VPX=128,NP=5;
-const c=document.getElementById('c'),cg=c.getContext('2d');
+const c=document.getElementById('c'),cs=c.getContext('2d'),ovc=document.getElementById('ov'),cg=ovc.getContext('2d');cg.setTransform(4,0,0,4,0,0); // the picture is drawn small (256x144); text, menus and bars go on a sharper layer above it
+if(new URLSearchParams(location.search).has('px'))c.style.imageRendering='pixelated'; // ?px=1 brings back the chunky look
 const bufc=document.createElement('canvas');bufc.width=256;bufc.height=144;
 const g=bufc.getContext('2d',{willReadFrequently:true});g.imageSmoothingEnabled=false; // scene is drawn here, then bent + posterized onto the screen canvas
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -19,13 +20,13 @@ const FK=.5,MAP=new Int32Array(W*H),VG=new Uint16Array(W*H),BAY=[-4,0,-3,1,2,-2,
 for(let y=0;y<H;y++)for(let x=0;x<W;x++){const px=(x+.5)/W*2-1,py=(y+.5)/H*2-1,r2=px*px+py*py,f=(1+FK*r2)/(1+FK);
  const sx=Math.floor((px*f+1)/2*W),sy=Math.floor((py*f+1)/2*H),i=y*W+x;
  MAP[i]=(sx<0||sx>=W||sy<0||sy>=H)?-1:sy*W+sx;VG[i]=Math.max(40,Math.round(256*(1-.42*(r2/2)*(r2/2)*2)))}
-function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.buffer),od=cg.createImageData(W,H),out=new Uint32Array(od.data.buffer);
+function present(){const id=g.getImageData(0,0,W,H),src=new Uint32Array(id.data.buffer),od=cs.createImageData(W,H),out=new Uint32Array(od.data.buffer);
  for(let i=0;i<W*H;i++){const s=MAP[i];if(s<0){out[i]=0xFF000000;continue}
-  const p=src[s],v=VG[i],d=BAY[(i&3)|(((i>>8)&3)<<2)];
+  const p=src[s],v=VG[i],d=0;
   let r=((p&255)*v>>8)+d,gg=(((p>>8)&255)*v>>8)+d,b=(((p>>16)&255)*v>>8)+d;
   r=r<0?0:r>255?255:r;gg=gg<0?0:gg>255?255:gg;b=b<0?0:b>255?255:b;r&=0xF8;gg&=0xF8;b&=0xF8;r|=r>>5;gg|=gg>>5;b|=b>>5;
   out[i]=0xFF000000|(b<<16)|(gg<<8)|r}
- cg.putImageData(od,0,0)}
+ cs.putImageData(od,0,0);cg.clearRect(0,0,W,H)}
 // screen pixel -> scene pixel (so a mouse lines up with what you see)
 const toScene=(dx,dy)=>{const x=clamp(Math.floor(dx),0,W-1),y=clamp(Math.floor(dy),0,H-1),s=MAP[y*W+x];return s<0?{x:dx,y:dy}:{x:s%W,y:(s/W)|0}};
 // scene pixel -> screen pixel (test hook only)
@@ -329,7 +330,8 @@ if(DEBUG){const m=e=>{const r=c.getBoundingClientRect();dbg=toScene((e.clientX-r
  addEventListener('mousemove',m);addEventListener('mousedown',e=>{m(e);press()})}
 let padPrev={};function pollPad(){try{const gp=(navigator.getGamepads?navigator.getGamepads():[])||[];for(const p of gp){if(!p)continue;for(const i of [0,5,7]){const d=p.buttons[i]&&p.buttons[i].pressed;if(d&&!padPrev[i])press();padPrev[i]=d}}}catch(e){}}
 let last=performance.now();
-function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();if(!window.__booted){window.__booted=1;var bt=document.getElementById('boot');if(bt)bt.parentNode.removeChild(bt)}window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
+Profiles.init('duel','BOULEVARD DUEL',{wins:{label:'MATCHES WON'}});let _lg=false;function endWatch(){if(scene==='end'&&!_lg){_lg=true;Profiles.played();if(matchWin)Profiles.add('wins','MATCHES WON',1)}else if(scene!=='end')_lg=false}
+function frame(n){const dt=Math.min((n-last)/1000,.05);last=n;pollPad();update(dt);draw();try{endWatch()}catch(e){}if(!window.__booted){window.__booted=1;var bt=document.getElementById('boot');if(bt)bt.parentNode.removeChild(bt)}window.pairQR&&pairQR(location.origin+'/bat?room='+room,scene==='title'&&!phoneUp&&!DEBUG);requestAnimationFrame(frame)}
 requestAnimationFrame(frame);
 window.__d=()=>({scene,rs,roundN,roundW,tleft,selP,selO,menuSel,fseq,seqRec,swType,pops:pops.map(p=>p.s),usedFin,matchWin,FORCE,phoneUp,p:F.p&&{hp:F.p.hp,blk:F.p.blk,cd:F.p.cd,stun:F.p.stun,grab:F.p.grab},o:F.o&&{hp:F.o.hp,blk:F.o.blk,act:F.o.act,kind:F.o.kind,stun:F.o.stun,grab:F.o.grab}});
 window.__set=o=>{Object.assign(window,o)};
