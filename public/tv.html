@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Spatial Arcade</title><style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style></head>
-<body><canvas id="c"></canvas><script src="/qr.js"></script><script>
+<body><canvas id="c"></canvas><script src="/qr.js"></script><script src="/profiles.js"></script><script>window.Profiles=window.Profiles||{init:function(){},played:function(){},record:function(){},add:function(){},cur:function(){return{name:"GUEST"}},open:function(){}}</script><script>
 const c=document.getElementById('c'),g=c.getContext('2d');
 let W,H,B,IX,IY,IW,IH;
 function rs(){W=c.width=innerWidth;H=c.height=innerHeight;B=Math.round(H*.035);IX=IY=B+Math.round(H*.015);IW=W-2*IX;IH=H-2*IY}
@@ -116,7 +116,9 @@ function spawn(){const sp=assist?1.35:1,d=Math.random()<.5?-1:1;
 function ensureTargets(){const n=targetCount();while(targets.length<n)spawn();while(targets.length>n)targets.pop()}
 function clearField(){targets=[];falls=[];parts=[];marks=[];popups=[];holding=false;reloadingUntil=0;moodT=0}
 function startGame(){hits=0;shots=0;combo=0;escaped=0;mode=['drone','rails','sky'][menuSel]||'drone';ammo=magSize();clearField();scene='play';R=null;SK=null;if(mode==='rails')initRails();else if(mode==='sky')initSky();else ensureTargets();sendState()}
-function goHome(){if(scene==='menu')return;scene='menu';mode='drone';R=null;SK=null;ammo=MAG;clearField();locked=false;sendState()}
+Profiles.init('sky','SKY DELIVERY',{drone:{label:'DRONE DROP - BEST COMBO'},rails:{label:'WAREHOUSE RUN - HIGH SCORE'},sky:{label:'SKY DELIVERY - HIGH SCORE'}},{tv:true});
+let _lr=null,_ls=null;function tvWatch(){if(R&&(R.phase==='over'||R.phase==='win')){if(_lr!==R){_lr=R;Profiles.played();Profiles.record('rails','WAREHOUSE RUN - HIGH SCORE',R.score)}}if(SK&&(SK.phase==='over'||SK.phase==='win')){if(_ls!==SK){_ls=SK;Profiles.played();Profiles.record('sky','SKY DELIVERY - HIGH SCORE',SK.score)}}}
+function goHome(){if(mode==='drone'&&scene==='play'&&best>0){Profiles.played();Profiles.record('drone','DRONE DROP - BEST COMBO',best)}if(scene==='menu')return;scene='menu';mode='drone';R=null;SK=null;ammo=MAG;clearField();locked=false;sendState()}
 function setMode(s){assist=!!s;ammo=magSize();reloadingUntil=0;holding=false;targets=[];ensureTargets();sendState()}
 function eff(){let ax=raw.x*W,ay=raw.y*H-recoilY*H;const LL=lockList();
  if(assist&&LL.length){let best=null,bd=1e9;
@@ -579,5 +581,6 @@ function draw(){const now=performance.now(),dt=Math.min(.05,(now-lastT)/1000);la
   g.textAlign='center';g.textBaseline='middle';g.font='bold '+(H*.07)+'px monospace';
   if(now<reloadingUntil)txt('RELOADING...',W/2,H*.5,'#f55');else if(ammo<=0)txt('RELOAD',W/2,H*.5,'#f55');
   g.textAlign='left'}
+ try{tvWatch()}catch(e){}
  requestAnimationFrame(draw)}draw();
 </script></body></html>
